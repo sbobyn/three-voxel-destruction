@@ -1,0 +1,142 @@
+{
+  "afternoon": {
+    "file": "qwantani_afternoon_puresky_1k.hdr",
+    "sun": [
+      0.4469,
+      0.6111,
+      0.6534
+    ],
+    "elevation": 40.8,
+    "sunColour": [
+      1,
+      0.983,
+      0.97
+    ],
+    "sunIrradiance": 18.876,
+    "skyColour": [
+      0.2901,
+      0.3361,
+      0.4297
+    ]
+  },
+  "dusk_2": {
+    "file": "qwantani_dusk_2_puresky_1k.hdr",
+    "sun": [
+      0.5549,
+      0.77,
+      0.3149
+    ],
+    "elevation": 18.4,
+    "sunColour": [
+      1,
+      0.577,
+      0.592
+    ],
+    "sunIrradiance": 6.662,
+    "skyColour": [
+      1.0501,
+      0.9616,
+      1.4224
+    ]
+  },
+  "late_afternoon": {
+    "file": "qwantani_late_afternoon_puresky_1k.hdr",
+    "sun": [
+      0.5574,
+      0.7632,
+      0.3267
+    ],
+    "elevation": 19.1,
+    "sunColour": [
+      1,
+      0.881,
+      0.737
+    ],
+    "sunIrradiance": 16.108,
+    "skyColour": [
+      0.6354,
+      0.6967,
+      0.7819
+    ]
+  },
+  "morning": {
+    "file": "qwantani_morning_puresky_1k.hdr",
+    "sun": [
+      0.5538,
+      0.7576,
+      0.3455
+    ],
+    "elevation": 20.2,
+    "sunColour": [
+      1,
+      0.929,
+      0.838
+    ],
+    "sunIrradiance": 11.027,
+    "skyColour": [
+      0.8265,
+      0.8426,
+      0.8775
+    ]
+  },
+  "night": {
+    "file": "qwantani_night_puresky_1k.hdr",
+    "sun": [
+      0.0989,
+      -0.0206,
+      0.9949
+    ],
+    "elevation": 84.2,
+    "sunColour": [
+      1,
+      0.594,
+      0.148
+    ],
+    "sunIrradiance": 0.001,
+    "skyColour": [
+      0.8426,
+      0.9076,
+      0.9008
+    ]
+  },
+  "noon": {
+    "file": "qwantani_noon_puresky_1k.hdr",
+    "sun": [
+      0.3806,
+      0.52,
+      0.7647
+    ],
+    "elevation": 49.9,
+    "sunColour": [
+      1,
+      0.981,
+      0.962
+    ],
+    "sunIrradiance": 15.257,
+    "skyColour": [
+      0.2376,
+      0.2805,
+      0.3728
+    ]
+  },
+  "sunset": {
+    "file": "qwantani_sunset_puresky_1k.hdr",
+    "sun": [
+      0.5849,
+      0.804,
+      0.1072
+    ],
+    "elevation": 6.2,
+    "sunColour": [
+      1,
+      0.58,
+      0.039
+    ],
+    "sunIrradiance": 3.971,
+    "skyColour": [
+      1.5024,
+      1.2528,
+      1.2932
+    ]
+  }
+}

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Voxel City</title>
+    <meta name="description" content="A destructible voxel city: every voxel a body in the AVBD solver on your GPU." />
+    <style>
+      /* No zooming, ever: touch-action isn't inherited, so every element says so (iOS ignores
+         the viewport's user-scalable). The menu still scrolls up and down. */
+      *,
+      *::before,
+      *::after {
+        touch-action: none;
+      }
+      .menu,
+      .menu * {
+        touch-action: pan-y;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #0e1014;
+        font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+        color: #f3efe6;
+      }
+      #view {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      /* The loader: here in the page so it shows at once, before any script runs (loader.ts drives it) */
+      #loader {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(ellipse at 50% 40%, #1d2029, #0b0c10 70%);
+        transition: opacity 500ms ease;
+      }
+      #loader.done {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #loader .card {
+        width: min(380px, 86vw);
+      }
+      #loader h1 {
+        margin: 0 0 4px;
+        font-size: 30px;
+        letter-spacing: -0.01em;
+      }
+      #loader .sub {
+        margin: 0 0 22px;
+        font-size: 13px;
+        opacity: 0.6;
+      }
+      #loader .track {
+        height: 6px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.1);
+        overflow: hidden;
+      }
+      #loader .fill {
+        height: 100%;
+        width: 0;
+        border-radius: 3px;
+        background: linear-gradient(90deg, #ff8a3d, #ffb347);
+        box-shadow: 0 0 12px rgba(255, 150, 60, 0.6);
+        transition: width 350ms ease-out;
+      }
+      #loader .row {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 10px;
+        font-size: 12.5px;
+      }
+      #loader .phase {
+        opacity: 0.8;
+      }
+      #loader .pct {
+        font-variant-numeric: tabular-nums;
+        opacity: 0.6;
+      }
+      #loader .steps {
+        margin: 18px 0 0;
+        padding: 0;
+        list-style: none;
+        font-size: 12px;
+        line-height: 1.9;
+      }
+      #loader .steps li {
+        opacity: 0.35;
+        transition: opacity 300ms;
+      }
+      #loader .steps li::before {
+        content: '';
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        margin-right: 10px;
+        border-radius: 50%;
+        border: 1.5px solid currentColor;
+        vertical-align: 0;
+      }
+      #loader .steps li.now {
+        opacity: 1;
+      }
+      #loader .steps li.now::before {
+        border-color: #ffb347;
+        animation: pulse 900ms ease-in-out infinite;
+      }
+      #loader .steps li.done {
+        opacity: 0.7;
+      }
+      #loader .steps li.done::before {
+        background: #ffb347;
+        border-color: #ffb347;
+      }
+      @keyframes pulse {
+        50% {
+          box-shadow: 0 0 0 4px rgba(255, 179, 71, 0.25);
+        }
+      }
+      #loader .error {
+        display: none;
+        margin-top: 16px;
+        padding: 12px 14px;
+        border-radius: 10px;
+        background: rgba(255, 90, 60, 0.12);
+        border: 1px solid rgba(255, 120, 80, 0.35);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      #loader.failed .error {
+        display: block;
+      }
+      #loader.failed .fill {
+        background: #b0493a;
+        box-shadow: none;
+      }
+      #loader .error small {
+        display: block;
+        margin-top: 6px;
+        opacity: 0.6;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loader">
+      <div class="card">
+        <h1>Voxel City</h1>
+        <p class="sub">Every voxel a body in the AVBD solver, on your GPU</p>
+        <div class="track"><div class="fill"></div></div>
+        <div class="row"><span class="phase">Starting…</span><span class="pct">0%</span></div>
+        <ul class="steps"></ul>
+        <div class="error"></div>
+      </div>
+    </div>
+    <canvas id="view"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

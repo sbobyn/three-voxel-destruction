@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Particles lab</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #9cc6ea;
+        font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        font-variant-numeric: tabular-nums;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #panel {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: rgba(20, 22, 26, 0.72);
+        color: #ececee;
+        max-width: 260px;
+      }
+      #panel .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      button,
+      select {
+        font: inherit;
+        padding: 4px 8px;
+      }
+      #stats {
+        white-space: pre;
+        color: #c9ccd2;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="panel">
+      <strong>Particles lab</strong>
+      <div class="row">
+        <button data-action="small">1 Small blast</button>
+        <button data-action="big">2 Big blast</button>
+        <button data-action="dust">3 Collapse dust</button>
+        <button data-action="impacts">4 Impacts</button>
+        <button data-action="smoulder">5 Smoulder</button>
+      </div>
+      <div class="row">
+        <label>Quality
+          <select id="quality">
+            <option value="low">low</option>
+            <option value="medium" selected>medium</option>
+            <option value="high">high</option>
+          </select>
+        </label>
+        <button data-action="hide">V Hide</button>
+        <button data-action="paused">P Pause</button>
+        <button data-action="occlusion">O AO</button>
+      </div>
+      <div id="stats"></div>
+    </div>
+    <script type="module" src="/src/particles-lab.ts"></script>
+  </body>
+</html>

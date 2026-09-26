@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Sky lab</title>
+    <link rel="stylesheet" href="/src/page.css" />
+    <style>
+      #readout {
+        left: 16px;
+        top: 16px;
+        padding: 8px 12px;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="readout" class="panel"></div>
+    <script type="module" src="/src/sky-lab.ts"></script>
+  </body>
+</html>
