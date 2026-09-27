@@ -91,7 +91,7 @@ export function random(seed: number): () => number {
 const BLOCK = 30;
 const STREET = 16;
 /** Voxels a metre. */
-const M = Math.round(1 / VOXEL);
+export const M = Math.round(1 / VOXEL);
 
 /** Base colours by material; each object shifts its own a little. */
 export const BASE: Record<Mat, number> = {
@@ -110,7 +110,20 @@ export const BASE: Record<Mat, number> = {
 
 type Put = (x: number, y: number, z: number, m: Mat, colour?: number) => void;
 
-export function buildCity(seed = 7): City {
+/** Builds a world object by object (buildCity, and the other scenes): `finish` makes the City. */
+export interface WorldBuilder {
+  rnd: () => number;
+  /** An object of w × d × h voxels with its min corner at voxel (x0, y0, 0); `fill` puts its voxels. */
+  place(x0: number, y0: number, w: number, d: number, h: number, fill: (put: Put) => void): void;
+  /** A block of voxels, x0..x1 × y0..y1 × z0..z1 (ends excluded). */
+  box(put: Put, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, m: Mat, colour?: number): void;
+  /** The object placed last. */
+  last(): Building;
+  /** The world: what's been placed, its faces and windows, and the street grid the ground draws. */
+  finish(grid: { pitch: number; street: number; blocks: number }): City;
+}
+
+export function worldBuilder(seed: number): WorldBuilder {
   const rnd = random(seed);
   const pos: number[] = [];
   const mat: number[] = [];
@@ -191,7 +204,79 @@ export function buildCity(seed = 7): City {
   const box = (put: Put, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, m: Mat, colour?: number) => {
     for (let z = z0; z < z1; z++) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) put(x, y, z, m, colour);
   };
+  const finish = (grid: { pitch: number; street: number; blocks: number }): City => {
+    const count = pos.length / 3;
+    const exposed = new Uint8Array(count);
+    for (let v = 0; v < count; v++) {
+      const b = buildings[bld[v]];
+      const c = cellOf[v];
+      const [x, y, z] = [c % b.w, Math.floor(c / b.w) % b.d, Math.floor(c / (b.w * b.d))];
+      const open = (ok: boolean, m: number) => !ok || b.cells[m] < 0;
+      const layer = b.w * b.d;
+      exposed[v] =
+        (open(x > 0, c - 1) ? 1 : 0) |
+        (open(x + 1 < b.w, c + 1) ? 2 : 0) |
+        (open(y > 0, c - b.w) ? 4 : 0) |
+        (open(y + 1 < b.d, c + b.w) ? 8 : 0) |
+        (z > 0 && open(true, c - layer) ? 16 : 0) |
+        (open(z + 1 < b.h, c + layer) ? 32 : 0);
+    }
+    // Panes: each window's glass, connected face to face, facing away from its object's middle
+    const pane = new Int32Array(count).fill(-1);
+    const panes: Pane[] = [];
+    for (let v = 0; v < count; v++) {
+      if (!isGlass(mat[v]) || pane[v] >= 0) continue;
+      const b = buildings[bld[v]];
+      const id = panes.length;
+      const voxels = [v];
+      pane[v] = id;
+      for (let n = 0; n < voxels.length; n++) {
+        const c = cellOf[voxels[n]];
+        const [x, y] = [c % b.w, Math.floor(c / b.w) % b.d];
+        const layer = b.w * b.d;
+        for (const [ok, m] of [
+          [x > 0, c - 1],
+          [x + 1 < b.w, c + 1],
+          [y > 0, c - b.w],
+          [y + 1 < b.d, c + b.w],
+          [c >= layer, c - layer],
+          [c + layer < b.cells.length, c + layer],
+        ] as [boolean, number][]) {
+          const u = ok ? b.cells[m] : -1;
+          if (u >= 0 && pane[u] < 0 && isGlass(mat[u])) {
+            pane[u] = id;
+            voxels.push(u);
+          }
+        }
+      }
+      const centre: [number, number, number] = [0, 0, 0];
+      for (const u of voxels) for (let a = 0; a < 3; a++) centre[a] += pos[3 * u + a] / voxels.length;
+      const mid = [(b.x0 + b.w / 2) * VOXEL, (b.y0 + b.d / 2) * VOXEL];
+      const out = [centre[0] - mid[0], centre[1] - mid[1]];
+      const len = Math.hypot(out[0], out[1]) || 1;
+      panes.push({ voxels, centre, normal: [out[0] / len, out[1] / len, 0] });
+    }
+    return {
+      count,
+      position: Float32Array.from(pos),
+      material: Uint8Array.from(mat),
+      building: Uint16Array.from(bld),
+      cell: Int32Array.from(cellOf),
+      color: Uint32Array.from(col),
+      state: new Uint8Array(count),
+      exposed,
+      pane,
+      panes,
+      buildings,
+      ...grid,
+    };
+  };
+  return { rnd, place, box, last: () => buildings[buildings.length - 1], finish };
+}
 
+export function buildCity(seed = 7): City {
+  const w = worldBuilder(seed);
+  const { rnd, place, box } = w;
   // The tower: 13 x 11 m, a 4.5 m shop floor and ten 3 m storeys, a rounded front-left corner.
   // Its walls stand in from the edges of its grid by margins that leave room for the canopy
   // and signs out front and left, and the AC units on the other sides.
@@ -359,90 +444,11 @@ export function buildCity(seed = 7): City {
     }
   });
 
-  /** A parked car along x: painted body, glass cabin on pillars, black tyres. */
-  const car = (cx: number, cy: number, paint: number) => {
-    const [L, Wc] = [18, 7];
-    place(Math.round(cx * M - L / 2), Math.round(cy * M - Wc / 2), L, Wc, 6, (put) => {
-      box(put, 1, 0, 1, L - 1, Wc, 3, Mat.Steel, paint);
-      for (const wx of [3, L - 5]) {
-        box(put, wx, 0, 0, wx + 2, 1, 2, Mat.Steel, 0x151515);
-        box(put, wx, Wc - 1, 0, wx + 2, Wc, 2, Mat.Steel, 0x151515);
-      }
-      // Pillars at the cabin's corners hold the roof (glass carries nothing), glass round them
-      for (const px of [6, 11]) for (const py of [1, Wc - 2]) box(put, px, py, 3, px + 1, py + 1, 5, Mat.Steel, paint);
-      box(put, 5, 0, 3, 13, Wc, 5, Mat.Glass);
-      box(put, 6, 1, 5, 12, Wc - 1, 6, Mat.Steel, paint);
-      box(put, 0, 1, 1, 1, Wc - 1, 2, Mat.Trim, 0xd0d0c8);
-      box(put, L - 1, 1, 1, L, Wc - 1, 2, Mat.Steel, 0x8a1c14);
-    });
-    buildings[buildings.length - 1].kind = 'car';
-  };
-  /**
-   * A street tree: a slim trunk forking into a few branches, each ending in a clump of leaves,
-   * the clumps lumpy and overlapping into a loose crown, darker underneath, catching the light
-   * on top. Every leaf is joined to a branch (no leaf left hanging in the air).
-   */
-  const tree = (cx: number, cy: number, seed: number) => {
-    const R = 11;
-    const H = 34;
-    const r = random(seed);
-    place(Math.round(cx * M - R), Math.round(cy * M - R), 2 * R, 2 * R, H, (put) => {
-      const bark = [0x3e2c1f, 0x4a3524, 0x55402c];
-      const fork = 13 + Math.floor(r() * 3);
-      box(put, R - 1, R - 1, 0, R + 1, R + 1, 7, Mat.Wood, bark[1]);
-      box(put, R - 1, R - 1, 7, R, R, fork + 1, Mat.Wood, bark[0]);
-      // Clumps: one crowning the trunk, four or five round it
-      const clumps: [number, number, number, number][] = [[R - 0.5 + (r() - 0.5) * 2, R - 0.5 + (r() - 0.5) * 2, fork + 11, 4.6]];
-      const n = 4 + Math.floor(r() * 2);
-      for (let k = 0; k < n; k++) {
-        const a = (k / n) * Math.PI * 2 + r() * 0.8;
-        const out = 4.5 + r() * 2;
-        clumps.push([R - 0.5 + Math.cos(a) * out, R - 0.5 + Math.sin(a) * out, fork + 5 + r() * 5, 3.4 + r() * 1.3]);
-      }
-      // Branches: from the fork out to each clump's middle, face to face (a diagonal step
-      // joins only at an edge, and what isn't joined by faces to the ground is left out)
-      for (const [x, y, z] of clumps) {
-        const [x0, y0, z0] = [R - 0.5, R - 0.5, fork];
-        const steps = Math.ceil(Math.hypot(x - x0, y - y0, z - z0) * 1.5);
-        let at = [Math.floor(x0), Math.floor(y0), Math.floor(z0)];
-        for (let k = 0; k <= steps; k++) {
-          const f = k / steps;
-          const to = [Math.floor(x0 + (x - x0) * f), Math.floor(y0 + (y - y0) * f), Math.floor(z0 + (z - z0) * f)];
-          for (const a of [2, 0, 1]) {
-            while (at[a] !== to[a]) {
-              at = [...at];
-              at[a] += Math.sign(to[a] - at[a]);
-              put(at[0], at[1], at[2], Mat.Wood, bark[2]);
-            }
-          }
-        }
-      }
-      // Leaves: inside a clump (a little squashed), its edge lumpy; shade by height in it
-      const greens = [0x2c5220, 0x365f24, 0x3f6b2a, 0x4d7a30, 0x5f8d36, 0x729c3e];
-      for (let z = fork; z < H; z++) {
-        for (let y = 0; y < 2 * R; y++) {
-          for (let x = 0; x < 2 * R; x++) {
-            let best = -Infinity;
-            let height = 0;
-            for (const [px, py, pz, pr] of clumps) {
-              const d = pr - Math.hypot(x + 0.5 - px - 0.5, y + 0.5 - py - 0.5, (z + 0.5 - pz) * 1.25);
-              if (d > best) [best, height] = [d, (z - pz) / pr];
-            }
-            const lump = ((Math.imul(x * 73 + y * 151 + z * 283 + seed * 17, 2654435761) >>> 0) / 2 ** 32) * 1.4;
-            if (best <= (best < 1.2 ? lump : 0)) continue;
-            const shade = Math.max(0, Math.min(greens.length - 1, Math.floor((height + 1) * 2.4 + r() * 1.6)));
-            put(x, y, z, Mat.Leaf, greens[shade]);
-          }
-        }
-      }
-    });
-  };
-
   // Outside: cars at the kerb of the street in front, a tree on the pavement
   const kerb = -BLOCK / 2 - 3 - 0.9;
-  car(-8, kerb, 0xa51d1d);
-  car(1.5, kerb, 0x1d3f8a);
-  car(10, kerb, 0xd8d4cc);
+  car(w, -8, kerb, 0xa51d1d);
+  car(w, 1.5, kerb, 0x1d3f8a);
+  car(w, 10, kerb, 0xd8d4cc);
   // Trees round the block's pavement (clear of the view in from the corner)
   for (const [x, y, k] of [
     [-13.3, -13.3, 1],
@@ -454,188 +460,213 @@ export function buildCity(seed = 7): City {
     [-2, 13.3, 7],
     [7, 13.3, 8],
   ])
-    tree(x, y, k);
-  /** A street lamp: a steel pole, an arm over the road, a warm lamp. */
-  const lamp = (cx: number, cy: number) => {
-    place(Math.round(cx * M) - 1, Math.round(cy * M) - 8, 3, 9, 26, (put) => {
-      box(put, 1, 7, 0, 2, 8, 25, Mat.Steel, 0x2c3034);
-      box(put, 1, 1, 24, 2, 7, 25, Mat.Steel, 0x2c3034);
-      box(put, 0, 0, 23, 3, 3, 24, Mat.LitGlass, 0xffd9a0);
-    });
-  };
-  for (const lx of [-12, 0, 12]) lamp(lx, kerb + 2.4);
+    tree(w, x, y, k);
+  for (const lx of [-12, 0, 12]) lamp(w, lx, kerb + 2.4);
 
-  // Street furniture round the block: every piece its own object, as breakable as the rest
-  /** A bench facing -y (or -x): wooden slats on steel frames, a backrest. */
-  const bench = (cx: number, cy: number, alongX: boolean) => {
-    const [L, D] = alongX ? [8, 3] : [3, 8];
-    place(Math.round(cx * M - L / 2), Math.round(cy * M - D / 2), L, D, 4, (put) => {
-      const at = (a: number, b: number, z: number, m: Mat, c: number) => (alongX ? put(a, b, z, m, c) : put(b, a, z, m, c));
-      for (let a = 0; a < 8; a++) {
-        for (const leg of [0, 7]) if (a === leg) for (let b = 0; b < 3; b++) at(a, b, 0, Mat.Steel, 0x24272b);
-        at(a, 0, 1, Mat.Wood, 0x8a5a32);
-        at(a, 1, 1, Mat.Wood, 0x7a4f2c);
-        at(a, 2, 2, Mat.Wood, 0x8a5a32);
-        at(a, 2, 3, Mat.Wood, 0x7a4f2c);
-        if (a === 0 || a === 7) at(a, 2, 1, Mat.Steel, 0x24272b);
-      }
-    });
-  };
-  /** A litter bin: a green steel drum with a dark lid. */
-  const bin = (cx: number, cy: number) => {
-    place(Math.round(cx * M) - 1, Math.round(cy * M) - 1, 2, 2, 5, (put) => {
-      box(put, 0, 0, 0, 2, 2, 4, Mat.Steel, 0x2f5a3a);
-      box(put, 0, 0, 4, 2, 2, 5, Mat.Steel, 0x1c1f22);
-    });
-  };
-  /** A fire hydrant. */
-  const hydrant = (cx: number, cy: number) => {
-    place(Math.round(cx * M), Math.round(cy * M), 1, 1, 4, (put) => {
-      box(put, 0, 0, 0, 1, 1, 3, Mat.Steel, 0xb3261e);
-      put(0, 0, 3, Mat.Steel, 0xd9d2c4);
-    });
-  };
-  /** A short steel post keeping cars off the pavement. */
-  const bollard = (cx: number, cy: number) => {
-    place(Math.round(cx * M), Math.round(cy * M), 1, 1, 4, (put) => {
-      box(put, 0, 0, 0, 1, 1, 3, Mat.Steel, 0x2a2d31);
-      put(0, 0, 3, Mat.Neon, 0xe8e2d4);
-    });
-  };
-  /**
-   * Traffic lights on the corner: a pole, an arm out over the road (dx, dy), a signal head at
-   * its end (red, amber, green; green lit), a crossing signal on the pole.
-   */
-  const signal = (cx: number, cy: number, dx: number, dy: number) => {
-    const arm = 10;
-    const [x0, y0] = [Math.round(cx * M) - (dx < 0 ? arm : 0), Math.round(cy * M) - (dy < 0 ? arm : 0)];
-    place(x0, y0, dx ? arm + 1 : 1, dy ? arm + 1 : 1, 20, (put) => {
-      const [px, py] = [dx < 0 ? arm : 0, dy < 0 ? arm : 0];
-      const [ex, ey] = [px + dx * arm, py + dy * arm];
-      box(put, px, py, 0, px + 1, py + 1, 19, Mat.Steel, 0x2a2e33);
-      for (let k = 1; k <= arm; k++) put(px + dx * k, py + dy * k, 18, Mat.Steel, 0x2a2e33);
-      box(put, ex, ey, 13, ex + 1, ey + 1, 18, Mat.Steel, 0x121416);
-      put(ex, ey, 16, Mat.Neon, 0x3a0c08);
-      put(ex, ey, 15, Mat.Neon, 0x3a2a06);
-      put(ex, ey, 14, Mat.Neon, 0x33ff66);
-      put(px, py, 9, Mat.Neon, 0xff7a1a);
-    });
-  };
-  /** A street name sign: a pole with two green plates. */
-  const sign = (cx: number, cy: number) => {
-    place(Math.round(cx * M) - 2, Math.round(cy * M) - 2, 5, 5, 13, (put) => {
-      box(put, 2, 2, 0, 3, 3, 12, Mat.Steel, 0x3a3f45);
-      box(put, 0, 2, 11, 5, 3, 12, Mat.Steel, 0x1f6b3c);
-      box(put, 2, 0, 12, 3, 5, 13, Mat.Steel, 0x1f6b3c);
-    });
-  };
-  /**
-   * A bus shelter facing the road (-y): steel posts, a roof, a glass back and side that
-   * shatter like any window, a bench, a lit advertising panel; its stop sign by the kerb.
-   */
-  const shelter = (cx: number, cy: number) => {
-    const [L, D, H] = [16, 6, 11];
-    place(Math.round(cx * M - L / 2), Math.round(cy * M - D / 2), L + 3, D, H + 5, (put) => {
-      const steel = 0x3b4046;
-      for (const [x, y] of [
-        [0, 0],
-        [L - 1, 0],
-        [0, D - 1],
-        [L - 1, D - 1],
-      ])
-        box(put, x, y, 0, x + 1, y + 1, H, Mat.Steel, steel);
-      box(put, 0, 0, H, L, D, H + 1, Mat.Steel, 0x2c3035);
-      box(put, 1, D - 1, 1, L - 5, D, H, Mat.Glass);
-      box(put, L - 5, D - 1, 1, L - 1, D, H, Mat.LitGlass, 0xf3e6c8);
-      box(put, 0, 1, 1, 1, D - 1, H, Mat.Glass);
-      box(put, 2, D - 3, 2, L - 2, D - 1, 3, Mat.Wood, 0x7a4f2c);
-      for (const x of [2, L - 3]) box(put, x, D - 2, 0, x + 1, D - 1, 2, Mat.Steel, steel);
-      // The stop sign: a pole by the kerb with a red disc
-      box(put, L + 1, 0, 0, L + 2, 1, 12, Mat.Steel, 0x3a3f45);
-      box(put, L, 0, 12, L + 3, 1, 15, Mat.Neon, 0xc8201a);
-    });
-  };
-  bench(-9.5, -13.6, true);
-  bin(-11.8, -13.4);
-  bench(-13.6, 8.5, false);
-  bin(-13.6, 6.3);
-  shelter(5.5, -16.6);
-  bin(9.2, -15.6);
-  hydrant(14.2, -16.4);
-  for (const bx of [-3, -1.5, 1.5, 3, 12, 13.5]) bollard(bx, -12);
-  signal(-15.5, -15.5, 0, -1);
-  signal(15.5, -15.5, 1, 0);
-  signal(15.5, 15.5, 0, 1);
-  signal(-15.5, 15.5, -1, 0);
-  sign(-16.8, -14.2);
+  bench(w, -9.5, -13.6, true);
+  bin(w, -11.8, -13.4);
+  bench(w, -13.6, 8.5, false);
+  bin(w, -13.6, 6.3);
+  shelter(w, 5.5, -16.6);
+  bin(w, 9.2, -15.6);
+  hydrant(w, 14.2, -16.4);
+  for (const bx of [-3, -1.5, 1.5, 3, 12, 13.5]) bollard(w, bx, -12);
+  signal(w, -15.5, -15.5, 0, -1);
+  signal(w, 15.5, -15.5, 1, 0);
+  signal(w, 15.5, 15.5, 0, 1);
+  signal(w, -15.5, 15.5, -1, 0);
+  sign(w, -16.8, -14.2);
 
-  const count = pos.length / 3;
-  const exposed = new Uint8Array(count);
-  for (let v = 0; v < count; v++) {
-    const b = buildings[bld[v]];
-    const c = cellOf[v];
-    const [x, y, z] = [c % b.w, Math.floor(c / b.w) % b.d, Math.floor(c / (b.w * b.d))];
-    const open = (ok: boolean, m: number) => !ok || b.cells[m] < 0;
-    const layer = b.w * b.d;
-    exposed[v] =
-      (open(x > 0, c - 1) ? 1 : 0) |
-      (open(x + 1 < b.w, c + 1) ? 2 : 0) |
-      (open(y > 0, c - b.w) ? 4 : 0) |
-      (open(y + 1 < b.d, c + b.w) ? 8 : 0) |
-      (z > 0 && open(true, c - layer) ? 16 : 0) |
-      (open(z + 1 < b.h, c + layer) ? 32 : 0);
-  }
-  // Panes: each window's glass, connected face to face, facing away from its object's middle
-  const pane = new Int32Array(count).fill(-1);
-  const panes: Pane[] = [];
-  for (let v = 0; v < count; v++) {
-    if (!isGlass(mat[v]) || pane[v] >= 0) continue;
-    const b = buildings[bld[v]];
-    const id = panes.length;
-    const voxels = [v];
-    pane[v] = id;
-    for (let n = 0; n < voxels.length; n++) {
-      const c = cellOf[voxels[n]];
-      const [x, y] = [c % b.w, Math.floor(c / b.w) % b.d];
-      const layer = b.w * b.d;
-      for (const [ok, m] of [
-        [x > 0, c - 1],
-        [x + 1 < b.w, c + 1],
-        [y > 0, c - b.w],
-        [y + 1 < b.d, c + b.w],
-        [c >= layer, c - layer],
-        [c + layer < b.cells.length, c + layer],
-      ] as [boolean, number][]) {
-        const u = ok ? b.cells[m] : -1;
-        if (u >= 0 && pane[u] < 0 && isGlass(mat[u])) {
-          pane[u] = id;
-          voxels.push(u);
+  return w.finish({ pitch: BLOCK + STREET, street: STREET, blocks: 1 });
+}
+
+/** A parked car along x: painted body, glass cabin on pillars, black tyres. */
+export function car(w: WorldBuilder, cx: number, cy: number, paint: number): void {
+  const { place, box } = w;
+  const [L, Wc] = [18, 7];
+  place(Math.round(cx * M - L / 2), Math.round(cy * M - Wc / 2), L, Wc, 6, (put) => {
+    box(put, 1, 0, 1, L - 1, Wc, 3, Mat.Steel, paint);
+    for (const wx of [3, L - 5]) {
+      box(put, wx, 0, 0, wx + 2, 1, 2, Mat.Steel, 0x151515);
+      box(put, wx, Wc - 1, 0, wx + 2, Wc, 2, Mat.Steel, 0x151515);
+    }
+    // Pillars at the cabin's corners hold the roof (glass carries nothing), glass round them
+    for (const px of [6, 11]) for (const py of [1, Wc - 2]) box(put, px, py, 3, px + 1, py + 1, 5, Mat.Steel, paint);
+    box(put, 5, 0, 3, 13, Wc, 5, Mat.Glass);
+    box(put, 6, 1, 5, 12, Wc - 1, 6, Mat.Steel, paint);
+    box(put, 0, 1, 1, 1, Wc - 1, 2, Mat.Trim, 0xd0d0c8);
+    box(put, L - 1, 1, 1, L, Wc - 1, 2, Mat.Steel, 0x8a1c14);
+  });
+  w.last().kind = 'car';
+}
+/**
+ * A street tree: a slim trunk forking into a few branches, each ending in a clump of leaves,
+ * the clumps lumpy and overlapping into a loose crown, darker underneath, catching the light
+ * on top. Every leaf is joined to a branch (no leaf left hanging in the air).
+ */
+export function tree(w: WorldBuilder, cx: number, cy: number, seed: number): void {
+  const { place, box } = w;
+  const R = 11;
+  const H = 34;
+  const r = random(seed);
+  place(Math.round(cx * M - R), Math.round(cy * M - R), 2 * R, 2 * R, H, (put) => {
+    const bark = [0x3e2c1f, 0x4a3524, 0x55402c];
+    const fork = 13 + Math.floor(r() * 3);
+    box(put, R - 1, R - 1, 0, R + 1, R + 1, 7, Mat.Wood, bark[1]);
+    box(put, R - 1, R - 1, 7, R, R, fork + 1, Mat.Wood, bark[0]);
+    // Clumps: one crowning the trunk, four or five round it
+    const clumps: [number, number, number, number][] = [[R - 0.5 + (r() - 0.5) * 2, R - 0.5 + (r() - 0.5) * 2, fork + 11, 4.6]];
+    const n = 4 + Math.floor(r() * 2);
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2 + r() * 0.8;
+      const out = 4.5 + r() * 2;
+      clumps.push([R - 0.5 + Math.cos(a) * out, R - 0.5 + Math.sin(a) * out, fork + 5 + r() * 5, 3.4 + r() * 1.3]);
+    }
+    // Branches: from the fork out to each clump's middle, face to face (a diagonal step
+    // joins only at an edge, and what isn't joined by faces to the ground is left out)
+    for (const [x, y, z] of clumps) {
+      const [x0, y0, z0] = [R - 0.5, R - 0.5, fork];
+      const steps = Math.ceil(Math.hypot(x - x0, y - y0, z - z0) * 1.5);
+      let at = [Math.floor(x0), Math.floor(y0), Math.floor(z0)];
+      for (let k = 0; k <= steps; k++) {
+        const f = k / steps;
+        const to = [Math.floor(x0 + (x - x0) * f), Math.floor(y0 + (y - y0) * f), Math.floor(z0 + (z - z0) * f)];
+        for (const a of [2, 0, 1]) {
+          while (at[a] !== to[a]) {
+            at = [...at];
+            at[a] += Math.sign(to[a] - at[a]);
+            put(at[0], at[1], at[2], Mat.Wood, bark[2]);
+          }
         }
       }
     }
-    const centre: [number, number, number] = [0, 0, 0];
-    for (const u of voxels) for (let a = 0; a < 3; a++) centre[a] += pos[3 * u + a] / voxels.length;
-    const mid = [(b.x0 + b.w / 2) * VOXEL, (b.y0 + b.d / 2) * VOXEL];
-    const out = [centre[0] - mid[0], centre[1] - mid[1]];
-    const len = Math.hypot(out[0], out[1]) || 1;
-    panes.push({ voxels, centre, normal: [out[0] / len, out[1] / len, 0] });
-  }
-  return {
-    count,
-    position: Float32Array.from(pos),
-    material: Uint8Array.from(mat),
-    building: Uint16Array.from(bld),
-    cell: Int32Array.from(cellOf),
-    color: Uint32Array.from(col),
-    state: new Uint8Array(count),
-    exposed,
-    pane,
-    panes,
-    buildings,
-    pitch: BLOCK + STREET,
-    street: STREET,
-    blocks: 1,
-  };
+    // Leaves: inside a clump (a little squashed), its edge lumpy; shade by height in it
+    const greens = [0x2c5220, 0x365f24, 0x3f6b2a, 0x4d7a30, 0x5f8d36, 0x729c3e];
+    for (let z = fork; z < H; z++) {
+      for (let y = 0; y < 2 * R; y++) {
+        for (let x = 0; x < 2 * R; x++) {
+          let best = -Infinity;
+          let height = 0;
+          for (const [px, py, pz, pr] of clumps) {
+            const d = pr - Math.hypot(x + 0.5 - px - 0.5, y + 0.5 - py - 0.5, (z + 0.5 - pz) * 1.25);
+            if (d > best) [best, height] = [d, (z - pz) / pr];
+          }
+          const lump = ((Math.imul(x * 73 + y * 151 + z * 283 + seed * 17, 2654435761) >>> 0) / 2 ** 32) * 1.4;
+          if (best <= (best < 1.2 ? lump : 0)) continue;
+          const shade = Math.max(0, Math.min(greens.length - 1, Math.floor((height + 1) * 2.4 + r() * 1.6)));
+          put(x, y, z, Mat.Leaf, greens[shade]);
+        }
+      }
+    }
+  });
+}
+
+
+/** A street lamp: a steel pole, an arm over the road, a warm lamp. */
+export function lamp(w: WorldBuilder, cx: number, cy: number): void {
+  const { place, box } = w;
+  place(Math.round(cx * M) - 1, Math.round(cy * M) - 8, 3, 9, 26, (put) => {
+    box(put, 1, 7, 0, 2, 8, 25, Mat.Steel, 0x2c3034);
+    box(put, 1, 1, 24, 2, 7, 25, Mat.Steel, 0x2c3034);
+    box(put, 0, 0, 23, 3, 3, 24, Mat.LitGlass, 0xffd9a0);
+  });
+}
+
+/** A bench facing -y (or -x): wooden slats on steel frames, a backrest. */
+export function bench(w: WorldBuilder, cx: number, cy: number, alongX: boolean): void {
+  const { place } = w;
+  const [L, D] = alongX ? [8, 3] : [3, 8];
+  place(Math.round(cx * M - L / 2), Math.round(cy * M - D / 2), L, D, 4, (put) => {
+    const at = (a: number, b: number, z: number, m: Mat, c: number) => (alongX ? put(a, b, z, m, c) : put(b, a, z, m, c));
+    for (let a = 0; a < 8; a++) {
+      for (const leg of [0, 7]) if (a === leg) for (let b = 0; b < 3; b++) at(a, b, 0, Mat.Steel, 0x24272b);
+      at(a, 0, 1, Mat.Wood, 0x8a5a32);
+      at(a, 1, 1, Mat.Wood, 0x7a4f2c);
+      at(a, 2, 2, Mat.Wood, 0x8a5a32);
+      at(a, 2, 3, Mat.Wood, 0x7a4f2c);
+      if (a === 0 || a === 7) at(a, 2, 1, Mat.Steel, 0x24272b);
+    }
+  });
+}
+/** A litter bin: a green steel drum with a dark lid. */
+export function bin(w: WorldBuilder, cx: number, cy: number): void {
+  const { place, box } = w;
+  place(Math.round(cx * M) - 1, Math.round(cy * M) - 1, 2, 2, 5, (put) => {
+    box(put, 0, 0, 0, 2, 2, 4, Mat.Steel, 0x2f5a3a);
+    box(put, 0, 0, 4, 2, 2, 5, Mat.Steel, 0x1c1f22);
+  });
+}
+/** A fire hydrant. */
+export function hydrant(w: WorldBuilder, cx: number, cy: number): void {
+  const { place, box } = w;
+  place(Math.round(cx * M), Math.round(cy * M), 1, 1, 4, (put) => {
+    box(put, 0, 0, 0, 1, 1, 3, Mat.Steel, 0xb3261e);
+    put(0, 0, 3, Mat.Steel, 0xd9d2c4);
+  });
+}
+/** A short steel post keeping cars off the pavement. */
+export function bollard(w: WorldBuilder, cx: number, cy: number): void {
+  const { place, box } = w;
+  place(Math.round(cx * M), Math.round(cy * M), 1, 1, 4, (put) => {
+    box(put, 0, 0, 0, 1, 1, 3, Mat.Steel, 0x2a2d31);
+    put(0, 0, 3, Mat.Neon, 0xe8e2d4);
+  });
+}
+/**
+ * Traffic lights on the corner: a pole, an arm out over the road (dx, dy), a signal head at
+ * its end (red, amber, green; green lit), a crossing signal on the pole.
+ */
+export function signal(w: WorldBuilder, cx: number, cy: number, dx: number, dy: number): void {
+  const { place, box } = w;
+  const arm = 10;
+  const [x0, y0] = [Math.round(cx * M) - (dx < 0 ? arm : 0), Math.round(cy * M) - (dy < 0 ? arm : 0)];
+  place(x0, y0, dx ? arm + 1 : 1, dy ? arm + 1 : 1, 20, (put) => {
+    const [px, py] = [dx < 0 ? arm : 0, dy < 0 ? arm : 0];
+    const [ex, ey] = [px + dx * arm, py + dy * arm];
+    box(put, px, py, 0, px + 1, py + 1, 19, Mat.Steel, 0x2a2e33);
+    for (let k = 1; k <= arm; k++) put(px + dx * k, py + dy * k, 18, Mat.Steel, 0x2a2e33);
+    box(put, ex, ey, 13, ex + 1, ey + 1, 18, Mat.Steel, 0x121416);
+    put(ex, ey, 16, Mat.Neon, 0x3a0c08);
+    put(ex, ey, 15, Mat.Neon, 0x3a2a06);
+    put(ex, ey, 14, Mat.Neon, 0x33ff66);
+    put(px, py, 9, Mat.Neon, 0xff7a1a);
+  });
+}
+/** A street name sign: a pole with two green plates. */
+export function sign(w: WorldBuilder, cx: number, cy: number): void {
+  const { place, box } = w;
+  place(Math.round(cx * M) - 2, Math.round(cy * M) - 2, 5, 5, 13, (put) => {
+    box(put, 2, 2, 0, 3, 3, 12, Mat.Steel, 0x3a3f45);
+    box(put, 0, 2, 11, 5, 3, 12, Mat.Steel, 0x1f6b3c);
+    box(put, 2, 0, 12, 3, 5, 13, Mat.Steel, 0x1f6b3c);
+  });
+}
+/**
+ * A bus shelter facing the road (-y): steel posts, a roof, a glass back and side that
+ * shatter like any window, a bench, a lit advertising panel; its stop sign by the kerb.
+ */
+export function shelter(w: WorldBuilder, cx: number, cy: number): void {
+  const { place, box } = w;
+  const [L, D, H] = [16, 6, 11];
+  place(Math.round(cx * M - L / 2), Math.round(cy * M - D / 2), L + 3, D, H + 5, (put) => {
+    const steel = 0x3b4046;
+    for (const [x, y] of [
+      [0, 0],
+      [L - 1, 0],
+      [0, D - 1],
+      [L - 1, D - 1],
+    ])
+      box(put, x, y, 0, x + 1, y + 1, H, Mat.Steel, steel);
+    box(put, 0, 0, H, L, D, H + 1, Mat.Steel, 0x2c3035);
+    box(put, 1, D - 1, 1, L - 5, D, H, Mat.Glass);
+    box(put, L - 5, D - 1, 1, L - 1, D, H, Mat.LitGlass, 0xf3e6c8);
+    box(put, 0, 1, 1, 1, D - 1, H, Mat.Glass);
+    box(put, 2, D - 3, 2, L - 2, D - 1, 3, Mat.Wood, 0x7a4f2c);
+    for (const x of [2, L - 3]) box(put, x, D - 2, 0, x + 1, D - 1, 2, Mat.Steel, steel);
+    // The stop sign: a pole by the kerb with a red disc
+    box(put, L + 1, 0, 0, L + 2, 1, 12, Mat.Steel, 0x3a3f45);
+    box(put, L, 0, 12, L + 3, 1, 15, Mat.Neon, 0xc8201a);
+  });
 }
 
 /** No voxels at all: the world before the city is built (the player and chips start with it). */
