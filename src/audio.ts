@@ -8,6 +8,10 @@ export class Sounds {
   /** After the master: a low-pass that muffles everything (in space), and a low shelf that keeps its weight. */
   private muffle: BiquadFilterNode | null = null;
   private body: BiquadFilterNode | null = null;
+  /** Your own suit's sounds, beside the master (its own volume), muffled less: heard through the suit, not the hull. */
+  private suit: GainNode | null = null;
+  private suitFilter: BiquadFilterNode | null = null;
+  private lastJet = 0;
   private noise: AudioBuffer | null = null;
   volume = 0.7;
   /**
@@ -26,13 +30,17 @@ export class Sounds {
       this.body.type = 'lowshelf';
       this.body.frequency.value = 150;
       this.master.connect(this.muffle).connect(this.body).connect(this.ctx.destination);
+      this.suit = this.ctx.createGain();
+      this.suitFilter = this.ctx.createBiquadFilter();
+      this.suit.connect(this.suitFilter).connect(this.body);
       const n = this.ctx.sampleRate * 3;
       this.noise = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
       const d = this.noise.getChannelData(0);
       for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
     }
     void this.ctx.resume();
-    this.master!.gain.value = this.volume;
+    this.master!.gain.value = this.suit!.gain.value = this.volume;
+    this.suitFilter!.frequency.value = this.muffled ? 2400 : this.ctx.sampleRate / 2;
     this.muffle!.frequency.value = this.muffled ? 380 : this.ctx.sampleRate / 2;
     this.body!.gain.value = this.muffled ? 4 : 0;
   }
@@ -48,6 +56,35 @@ export class Sounds {
   setVolume(v: number): void {
     this.volume = v;
     if (this.master) this.master.gain.value = v;
+    if (this.suit) this.suit.gain.value = v;
+  }
+
+  /**
+   * A puff from the suit's jets (`strength` 0..1): a short pressurised "pssht", gas through a band falling as the
+   * valve shuts, with a soft thump of the kick through the suit. At most one every 70 ms, so a long push pulses.
+   */
+  jet(strength: number): void {
+    const { ctx } = this;
+    if (!ctx || !this.suit || ctx.currentTime - this.lastJet < 0.07) return;
+    this.lastJet = ctx.currentTime;
+    const t = ctx.currentTime;
+    const seconds = 0.1 + 0.06 * strength + Math.random() * 0.03;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.playbackRate.value = 0.9 + Math.random() * 0.2;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 0.9;
+    const f = 1500 + Math.random() * 400;
+    bp.frequency.setValueAtTime(f, t);
+    bp.frequency.exponentialRampToValueAtTime(f * 0.45, t + seconds);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.06 + 0.1 * strength, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
+    src.connect(bp).connect(g).connect(this.suit);
+    src.start(t, Math.random() * 2, seconds + 0.05);
+    this.tone(0.05 + 0.06 * strength, 110, 60, 0.07);
   }
 
   /** Noise through a low-pass falling from `from` to `to` Hz over `seconds`, at `gain`. */

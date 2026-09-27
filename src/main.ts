@@ -860,7 +860,7 @@ function tracerMesh(): THREE.Object3D {
   return m;
 }
 /**
- * In orbit, the suit's jets: little white puffs blown out against the push (so they fire as you set off, stop or
+ * In orbit, the suit's jets: little white puffs (and their pssht) blown out against the push (so they fire as you set off, stop or
  * turn, more the harder you push), from its shoulders and hips, a little ahead of the eye so some show.
  */
 const JET_SPEED = 3;
@@ -879,6 +879,7 @@ function jets(dt: number): void {
   at.z -= Math.random() < 0.5 ? 0.3 : 0.6;
   at.addScaledVector(away, 0.2);
   effects.jet(at.toArray(), away.multiplyScalar(JET_SPEED).add(player.velocity));
+  sounds.jet(Math.min(push / 15, 1));
 }
 
 /** The afterfire at a gear change, and the exhaust's smoke (grey puffs, more under throttle). */
