@@ -86,6 +86,8 @@ export class Player {
 
   /** In orbit: always flying, gliding, no ground to stop at. */
   zeroG = false;
+  /** Flying, the push this step (m/s²): in orbit, what the suit's jets gave. */
+  readonly thrust = new THREE.Vector3();
 
   update(dt: number, input: Input): void {
     const fwd = new THREE.Vector2(Math.cos(this.yaw), Math.sin(this.yaw));
@@ -104,7 +106,9 @@ export class Player {
       target.multiplyScalar(speed);
       // Critically damped: responsive, no drift once the keys are up. In orbit, slow to
       // answer and slow to stop: thrusters against your own momentum, a glide
+      this.thrust.copy(this.velocity);
       this.velocity.lerp(target, 1 - Math.exp(-dt / (this.zeroG ? 0.9 : FLY_RESPONSE)));
+      this.thrust.subVectors(this.velocity, this.thrust).divideScalar(Math.max(dt, 1e-6));
       this.position.addScaledVector(this.velocity, dt);
       if (!this.zeroG && this.position.z < 0.1) {
         this.position.z = 0.1;

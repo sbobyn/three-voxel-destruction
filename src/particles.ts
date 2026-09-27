@@ -85,7 +85,7 @@ export type ParticleQuality = 'low' | 'medium' | 'high';
 const Kind = { Fire: 0, Smoke: 1, Dust: 2, Spark: 3 } as const;
 
 /** How a burst's particles are placed and launched (the spawn kernel). */
-const Burst = { Fireball: 0, Smoke: 1, DustRing: 2, Crumble: 3, Impact: 4, Smoulder: 5, Flame: 6, Sparks: 7, Exhaust: 8 } as const;
+const Burst = { Fireball: 0, Smoke: 1, DustRing: 2, Crumble: 3, Impact: 4, Smoulder: 5, Flame: 6, Sparks: 7, Exhaust: 8, Jet: 9 } as const;
 
 /** Each burst type's lifetime range (s) before its life scale; the live count mirrors it. */
 const LIFE: [number, number][] = [
@@ -98,6 +98,7 @@ const LIFE: [number, number][] = [
   [0.6, 1.2], // smouldering flame
   [1.2, 3], // sparks
   [0.7, 1.4], // exhaust wisps
+  [0.5, 1], // a suit jet's puffs
 ];
 
 /**
@@ -483,6 +484,15 @@ export class Particles {
     this.queue([Burst.Exhaust, 0.1 + amount * 0.12, 1, 1, 0.86, 0.86, 0.88, 0.3 + amount * 0.15, at[0], at[1], at[2], this.quality.size], [at[0], at[1], at[2]], n);
   }
 
+  /** A puff from a suit's jet at `at`, blown at `velocity` (m/s): a couple of small white wisps, swelling as they go. */
+  jet(at: ArrayLike<number>, velocity: THREE.Vector3): void {
+    const speed = velocity.length();
+    if (speed === 0) return;
+    // (The burst's centre a step back along the jet: the puffs fly out from it, through `at`)
+    const [x, y, z] = [at[0] - velocity.x / speed, at[1] - velocity.y / speed, at[2] - velocity.z / speed];
+    this.queue([Burst.Jet, 0.14, speed, 1, 0.94, 0.94, 0.96, 0.45, x, y, z, this.quality.size], [at[0], at[1], at[2]], Math.max(1, Math.round(2 * this.quality.count)));
+  }
+
   /** Lingering smoke source (e.g. burning spot) for `seconds`. */
   smoulder(at: ArrayLike<number>, seconds: number): void {
     const p = new THREE.Vector3(at[0], at[1], at[2]);
@@ -755,6 +765,14 @@ export class Particles {
           radius.assign(size.mul(rnd(5).mul(0.5).add(0.5)));
           kind.assign(Kind.Dust);
           growth.assign(size.mul(0.8));
+        })
+        .ElseIf(type.equal(Burst.Jet), () => {
+          // Out of the nozzle along its line (from the burst's centre through it), in a narrow cone
+          pos.assign(origin.add(ball.mul(0.03)));
+          vel.assign(normalize(origin.sub(b2.xyz)).add(ball.mul(0.2)).mul(speed.mul(rnd(3).mul(0.4).add(0.8))));
+          radius.assign(size.mul(rnd(5).mul(0.5).add(0.5)));
+          kind.assign(Kind.Dust);
+          growth.assign(size.mul(3));
         })
         .ElseIf(type.equal(Burst.Smoulder), () => {
           pos.assign(origin.add(ball.mul(0.5)));

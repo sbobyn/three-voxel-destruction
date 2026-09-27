@@ -57,9 +57,10 @@ interface Effects {
   impact(at: ArrayLike<number>, speed: number, tint: THREE.Color): void;
   sparks(at: ArrayLike<number>, count: number, speed: number): void;
   exhaust(at: ArrayLike<number>, amount: number): void;
+  jet(at: ArrayLike<number>, velocity: THREE.Vector3): void;
   update(dt: number, camera: THREE.Camera): void;
 }
-const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, update() {} };
+const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, jet() {}, update() {} };
 
 /** Which world: the city block (the default), the race track (?scene=track) or the space station (?scene=space). */
 const SCENE: 'city' | 'track' | 'space' = (['track', 'space'] as const).find((s) => s === new URLSearchParams(location.search).get('scene')) ?? 'city';
@@ -858,6 +859,28 @@ function tracerMesh(): THREE.Object3D {
   view.scene.add(m);
   return m;
 }
+/**
+ * In orbit, the suit's jets: little white puffs blown out against the push (so they fire as you set off, stop or
+ * turn, more the harder you push), from its shoulders and hips, a little ahead of the eye so some show.
+ */
+const JET_SPEED = 3;
+let jetDue = 0;
+function jets(dt: number): void {
+  const push = player.thrust.length();
+  if (push < 0.5) return;
+  jetDue -= dt * Math.min(push, 30);
+  if (jetDue > 0) return;
+  jetDue = 0.6 + Math.random() * 0.4;
+  const away = player.thrust.clone().divideScalar(-push);
+  const at = player.eye(new THREE.Vector3());
+  const side = Math.random() < 0.5 ? 1 : -1;
+  at.x += Math.cos(player.yaw) * 0.4 + Math.sin(player.yaw) * 0.45 * side;
+  at.y += Math.sin(player.yaw) * 0.4 - Math.cos(player.yaw) * 0.45 * side;
+  at.z -= Math.random() < 0.5 ? 0.3 : 0.6;
+  at.addScaledVector(away, 0.2);
+  effects.jet(at.toArray(), away.multiplyScalar(JET_SPEED).add(player.velocity));
+}
+
 /** The afterfire at a gear change, and the exhaust's smoke (grey puffs, more under throttle). */
 let upshifts = 0;
 let smokeDue = 0;
@@ -935,6 +958,7 @@ function startEffects(): Effects {
     impact: (at, speed, tint) => particles.impact(at, speed, tint),
     sparks: (at, count, speed) => particles.sparks(at, count, speed),
     exhaust: (at, amount) => particles.exhaust(at, amount),
+    jet: (at, velocity) => particles.jet(at, velocity),
     update: (dt, camera) => {
       if (sky) {
         sun.copy(sky.sunColor).multiplyScalar(0.45 * sky.sunIntensity());
@@ -1777,6 +1801,7 @@ function tick(now: number): void {
     } else {
       const stride = Math.floor(player.walk / Math.PI);
       player.update(dt, input());
+      if (player.zeroG) jets(dt);
       // Footsteps at each half stride; a thud and a dip on landing
       if (player.onGround && Math.floor(player.walk / Math.PI) !== stride) sounds.step(keys.has('ShiftLeft'));
       if (player.landed > 4) {
