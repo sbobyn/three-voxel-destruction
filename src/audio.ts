@@ -2,11 +2,11 @@
 // low-pass with a sub-bass thump; the hammer a short knock; the blaster a falling chirp; a
 // collapse a long low rumble. Quieter and duller with distance.
 
-/** A tyre's squeal: its partials (Hz), how narrow each (Q) and how loud (noise through a band that narrow is quiet). */
-const SQUEAL: [number, number, number][] = [
-  [980, 45, 5],
-  [1460, 38, 3.2],
-  [2230, 30, 1.8],
+/** A tyre's squeal: its oscillators (their pitch as a share of the squeal's, their wave, and how loud). */
+const SQUEAL: [number, OscillatorType, number][] = [
+  [1, 'sawtooth', 0.5],
+  [1.012, 'square', 0.3],
+  [1.5, 'sawtooth', 0.2],
 ];
 
 export class Sounds {
@@ -18,10 +18,10 @@ export class Sounds {
   /** Your own suit's sounds, beside the master (its own volume), muffled less: heard through the suit, not the hull. */
   private suit: GainNode | null = null;
   private suitFilter: BiquadFilterNode | null = null;
-  /** The tyres' screech: the squeal's partials, the hiss and the scrub, their levels set each frame they slide. */
+  /** The tyres' screech: its tone's oscillators, the hiss and the scrub, their levels set each frame they slide. */
   private screech: {
-    gain: GainNode;
-    partials: { band: BiquadFilterNode; g: GainNode; hz: number; level: number; drift: number }[];
+    out: GainNode;
+    oscillators: { o: OscillatorNode; ratio: number }[];
     hissLevel: GainNode;
     scrubLevel: GainNode;
   } | null = null;
@@ -75,66 +75,78 @@ export class Sounds {
   }
 
   /**
-   * Tyres screeching (`amount` 0..1; call each frame they slide). Rubber stick-slipping on tarmac: noise rung
-   * through a few very narrow resonances (the squeal's partials, not an oscillator's steady tone), each wandering
-   * in pitch by its own random walk and fluttering in level, over a broad hiss and the low rumble of the scrub;
-   * the harder the slide, the higher, louder and rawer. Unless called again it dies away by itself.
+   * Tyres screeching (`amount` 0..1; call each frame they slide). Rubber stick-slipping on tarmac sings: a buzzy,
+   * harmonic tone (a few detuned oscillators, their pitch jittering at random, not a smooth wobble), chattering in
+   * level as the tread grips and lets go, roughened by a little distortion, brightest round 1.5 kHz; under it the
+   * hiss of the rubber and the low scrub. Harder slides are higher, louder and rougher. Unless called again it dies
+   * away by itself.
    */
   skid(amount: number): void {
     const { ctx } = this;
     if (!ctx || !this.master || !this.noise) return;
     if (!this.screech) {
-      const gain = ctx.createGain();
-      gain.gain.value = 0;
-      gain.connect(this.master);
-      const source = () => {
+      const out = ctx.createGain();
+      out.gain.value = 0;
+      out.connect(this.master);
+      const noise = (lowpass: number) => {
         const n = ctx.createBufferSource();
         n.buffer = this.noise;
         n.loop = true;
-        n.playbackRate.value = 0.9 + Math.random() * 0.2;
         n.start(0, Math.random() * 2);
-        return n;
+        const f = ctx.createBiquadFilter();
+        f.type = 'lowpass';
+        f.frequency.value = lowpass;
+        n.connect(f);
+        return f;
       };
-      // The squeal: three partials, each its own noise through a narrow band
-      const partials = SQUEAL.map(([hz, q, level]) => {
-        const band = ctx.createBiquadFilter();
-        band.type = 'bandpass';
-        band.frequency.value = hz;
-        band.Q.value = q;
+      // The tone: detuned oscillators whose pitch jitters (slow noise into their frequency)
+      const tone = ctx.createGain();
+      const jitter = noise(18);
+      const oscillators = SQUEAL.map(([ratio, type, level]) => {
+        const o = ctx.createOscillator();
+        o.type = type;
         const g = ctx.createGain();
         g.gain.value = level;
-        source().connect(band).connect(g).connect(gain);
-        return { band, g, hz, level, drift: 0 };
+        o.connect(g).connect(tone);
+        const depth = ctx.createGain();
+        depth.gain.value = 900 * ratio;
+        jitter.connect(depth).connect(o.frequency);
+        o.start();
+        return { o, ratio };
       });
-      // The hiss of it and the scrub's rumble
+      // The chatter: its level fluttering fast and at random as the tread grips and lets go
+      const chatter = ctx.createGain();
+      chatter.gain.value = 0.55;
+      const flutter = ctx.createGain();
+      flutter.gain.value = 6;
+      noise(70).connect(flutter).connect(chatter.gain);
+      // Rough, then brightest round 1.5 kHz (no rumble in the tone, no fizz above it)
+      const rough = ctx.createWaveShaper();
+      rough.curve = Float32Array.from({ length: 1024 }, (_, i) => Math.tanh(((i / 1023) * 2 - 1) * 2.5));
+      const body = ctx.createBiquadFilter();
+      body.type = 'bandpass';
+      body.frequency.value = 1500;
+      body.Q.value = 0.9;
+      tone.connect(chatter).connect(rough).connect(body).connect(out);
+      // The rubber's hiss and the scrub
       const hiss = ctx.createBiquadFilter();
       hiss.type = 'bandpass';
-      hiss.frequency.value = 3200;
+      hiss.frequency.value = 3000;
       hiss.Q.value = 0.7;
       const hissLevel = ctx.createGain();
-      hiss.connect(hissLevel).connect(gain);
-      source().connect(hiss);
-      const scrub = ctx.createBiquadFilter();
-      scrub.type = 'lowpass';
-      scrub.frequency.value = 260;
+      noise(20000).connect(hiss).connect(hissLevel).connect(out);
       const scrubLevel = ctx.createGain();
-      scrub.connect(scrubLevel).connect(gain);
-      source().connect(scrub);
-      this.screech = { gain, partials, hissLevel, scrubLevel };
+      noise(240).connect(scrubLevel).connect(out);
+      this.screech = { out, oscillators, hissLevel, scrubLevel };
     }
     const t = ctx.currentTime;
-    const { gain, partials, hissLevel, scrubLevel } = this.screech;
-    gain.gain.cancelScheduledValues(t);
-    gain.gain.setTargetAtTime(0.35 + 0.5 * amount, t, 0.05);
-    gain.gain.setTargetAtTime(0, t + 0.06, 0.1);
-    // Each partial wanders (a random walk, pulled back to its pitch, higher the harder it slides) and flutters
-    for (const p of partials) {
-      p.drift = p.drift * 0.92 + (Math.random() - 0.5) * 0.05;
-      p.band.frequency.setTargetAtTime(p.hz * (1 + 0.18 * amount + p.drift), t, 0.03);
-      p.g.gain.setTargetAtTime(p.level * (0.55 + 0.45 * Math.random()), t, 0.02);
-    }
-    hissLevel.gain.setTargetAtTime(0.05 + 0.12 * amount, t, 0.05);
-    scrubLevel.gain.setTargetAtTime(0.18 + 0.2 * amount, t, 0.05);
+    const { out, oscillators, hissLevel, scrubLevel } = this.screech;
+    out.gain.cancelScheduledValues(t);
+    out.gain.setTargetAtTime(0.12 + 0.14 * amount, t, 0.05);
+    out.gain.setTargetAtTime(0, t + 0.06, 0.1);
+    for (const { o, ratio } of oscillators) o.frequency.setTargetAtTime((720 + 260 * amount) * ratio, t, 0.08);
+    hissLevel.gain.setTargetAtTime(0.15 + 0.3 * amount, t, 0.05);
+    scrubLevel.gain.setTargetAtTime(0.8 + 0.8 * amount, t, 0.05);
   }
 
   /**

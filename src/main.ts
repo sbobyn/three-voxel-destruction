@@ -752,9 +752,16 @@ function driveStep(dt: number): void {
   c.begin();
   const [x0, y0, h0] = [c.position.x, c.position.y, c.heading];
   const parts = Math.max(1, Math.ceil((c.velocity.length() * dt) / 0.33));
+  // Already into something (wedged, or a wall left standing round it)? A move that goes no further in is free:
+  // it can always drive out, or along, never deeper
+  let inside = sweep(city, c.position.x, c.position.y, c.heading).length;
   for (let k = 0; k < parts; k++) {
     c.step(dt / parts, d);
     const hits = sweep(city, c.position.x, c.position.y, c.heading);
+    if (hits.length && hits.length <= inside) {
+      inside = hits.length;
+      continue;
+    }
     if (hits.length && !crash(hits)) {
       c.undo(0.2);
       break;
@@ -786,8 +793,9 @@ function crash(hits: number[]): boolean {
     hurtCar(Math.max(0, v - 5) * STOP_DAMAGE, struck(hits));
     return false;
   }
-  const f = c.forward;
-  const nose = new THREE.Vector3(c.position.x + f.x * (CAR_SIZE[0] / 2 + 0.15), c.position.y + f.y * (CAR_SIZE[0] / 2 + 0.15), CLEARANCE + 0.55);
+  // Where it's going into things (nose, tail or side: the middle of what it struck), and across its way there
+  const f = new THREE.Vector2(c.velocity.x, c.velocity.y).normalize();
+  const nose = struck(hits).setZ(CLEARANCE + 0.55);
   const at = (h: number) => Array.from(city.position.subarray(3 * h, 3 * h + 3));
   const near = (a: number[], b: number[], r: number) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2 < r * r;
   const hitsAt: Hit[] = [];
