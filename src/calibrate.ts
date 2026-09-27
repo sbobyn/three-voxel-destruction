@@ -9,7 +9,8 @@
 // a step fits PHYSICS_MS; a slow GPU also gets fewer solver iterations. Drawing: the real scene with a smoke cloud in view, drawn at
 // high, then medium, then low quality until a frame fits RENDER_MS, and at a lower resolution
 // if even low doesn't. Both leave room for each other inside a 60 fps frame. The result is kept
-// per device (the GPU and the screen), so later loads skip it.
+// per device (the GPU and the screen) and scene (orbit's clouds cost far more a pixel than the
+// city), so later loads of it skip it.
 
 import { GpuSolver3D, gpuParams3D, REF_UP } from 'three-avbd/advanced';
 import { Rigid } from 'three-avbd/advanced';
@@ -35,7 +36,7 @@ export interface DeviceProfile {
   frameMs: number;
 }
 
-const VERSION = 2;
+const VERSION = 3;
 const STORE = 'city.profile';
 /** Budgets inside a 60 fps frame (16.7 ms): drawing a heavy frame, and one physics step. */
 const RENDER_MS = 10;
@@ -46,25 +47,31 @@ const CONTACTS_PER_LOOSE = 3;
 const CAP_MIN = 1200;
 const CAP_MAX = 8000;
 
-/** This device: its GPU and its screen (a different window size draws a different number of pixels). */
-export function deviceKey(adapter: string): string {
+/** This device: its GPU and its screen (a different window size draws a different number of pixels), in `scene`. */
+export function deviceKey(adapter: string, scene: string): string {
   const w = Math.round(screen.width * devicePixelRatio);
   const h = Math.round(screen.height * devicePixelRatio);
-  return `${adapter}|${Math.max(w, h)}x${Math.min(w, h)}`;
+  return `${adapter}|${Math.max(w, h)}x${Math.min(w, h)}|${scene}`;
+}
+
+/** The profiles kept, by key. */
+function kept(): Record<string, DeviceProfile> {
+  try {
+    const all = JSON.parse(localStorage.getItem(STORE) ?? '{}') as Record<string, DeviceProfile>;
+    return all && typeof all === 'object' && !('version' in all) ? all : {};
+  } catch {
+    return {};
+  }
 }
 
 export function savedProfile(key: string): DeviceProfile | null {
-  try {
-    const p = JSON.parse(localStorage.getItem(STORE) ?? 'null') as DeviceProfile | null;
-    return p && p.version === VERSION && p.key === key ? p : null;
-  } catch {
-    return null;
-  }
+  const p = kept()[key];
+  return p && p.version === VERSION ? p : null;
 }
 
 export function saveProfile(p: DeviceProfile): void {
   try {
-    localStorage.setItem(STORE, JSON.stringify(p));
+    localStorage.setItem(STORE, JSON.stringify({ ...kept(), [p.key]: p }));
   } catch {
     // storage unavailable: it will be measured again next time
   }

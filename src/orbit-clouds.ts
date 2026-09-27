@@ -192,6 +192,13 @@ export class OrbitClouds {
     this.object.scale.set(2 * d * tanHalf * camera.aspect, 2 * d * tanHalf, 1);
   }
 
+  /** Steps along each ray and towards the sun, by quality (orbit's biggest cost a pixel). */
+  setQuality(quality: string): void {
+    const [view, light] = quality === 'high' ? [32, 2] : quality === 'medium' ? [22, 2] : [14, 1];
+    this.layer.uniforms.viewSteps.value = view;
+    this.layer.uniforms.lightSteps.value = light;
+  }
+
   dispose(): void {
     this.layer.dispose();
     this.map.dispose();
