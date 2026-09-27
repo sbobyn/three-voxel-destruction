@@ -131,18 +131,22 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 .menu button.play { width: 100%; padding: 13px; border: 0; border-radius: 10px; background: #ff8a3d; color: #1a0f06; font: 700 15px inherit; font-family: inherit; cursor: pointer; }
 .menu button.play:hover { background: #ff9d57; }
 .menu .buttons { display: flex; gap: 8px; }
-.menu button.reset { flex: none; padding: 13px 18px; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; background: none; color: inherit; font: 600 14px inherit; font-family: inherit; cursor: pointer; }
-.menu button.reset:hover { border-color: #ff8a3d; }
 .menu .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 12px 0; font-size: 13px; }
 .menu .row input[type=range] { width: 200px; accent-color: #ff8a3d; }
 .menu .row select { background: #2a2d35; color: inherit; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 4px 8px; font: inherit; }
 .menu .tune { font-size: 12px; opacity: 0.75; margin-top: -4px; }
 .menu .retune { background: none; border: 1px solid rgba(255,255,255,0.2); color: inherit; border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; }
 .menu .retune:hover { border-color: #ff8a3d; }
-.menu .scenes { display: flex; gap: 8px; margin: -6px 0 16px; }
-.menu .scenes a { flex: 1; padding: 8px 0; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15); color: inherit; text-decoration: none; text-align: center; font-size: 13px; font-weight: 600; }
-.menu .scenes a:hover { border-color: #ff8a3d; }
-.menu .scenes a.on { border-color: #ff8a3d; background: rgba(255,138,61,0.12); }
+.topbar { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 11; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; background: rgba(14,16,20,0.6); border: 1px solid rgba(255,255,255,0.12); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-size: 13px; font-weight: 600; user-select: none; }
+.topbar a, .topbar button { padding: 6px 12px; border-radius: 8px; border: 0; background: none; color: rgba(255,255,255,0.72); font: inherit; text-decoration: none; cursor: pointer; white-space: nowrap; transition: background 120ms, color 120ms; }
+.topbar a:hover, .topbar button:hover { color: #fff; background: rgba(255,255,255,0.08); }
+.topbar a.on { color: #1a0f06; background: #ff8a3d; }
+.topbar .sep { width: 1px; height: 18px; margin: 0 4px; background: rgba(255,255,255,0.15); }
+.topbar kbd { margin-left: 6px; padding: 0 5px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.25); font: inherit; font-size: 11px; opacity: 0.7; }
+/* Touch: at the top left, level with the fly and pause buttons in the top right corner */
+body.touch .topbar { top: calc(env(safe-area-inset-top) + 12px); left: calc(env(safe-area-inset-left) + 12px); transform: none; font-size: 12px; }
+body.touch .topbar a, body.touch .topbar button { padding: 6px 9px; }
+body.touch .topbar kbd { display: none; }
 .menu .grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 14px 0 18px; font-size: 12.5px; opacity: 0.8; }
 .menu .grid b { font-weight: 600; opacity: 0.9; }
 .hud .toast { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); padding: 6px 14px; border-radius: 8px; background: rgba(14,16,20,0.6); font-size: 13px; font-weight: 600; opacity: 0; transition: opacity 300ms; }
@@ -363,7 +367,6 @@ export class Hud {
             ? 'A space station in orbit, every truss, module and solar wing voxels in the AVBD solver, on your GPU, with no gravity. Cut a wing loose and it drifts off; blow a module apart and it scatters into the dark.'
             : "Every one of the city's voxels is a body in the AVBD solver, running on your GPU. Knock a hole in a tower and whatever it held up comes down."
       }</p>
-      <div class="scenes"><a href="${link(null)}" class="${track || space ? '' : 'on'}">City</a><a href="${link('track')}" class="${track ? 'on' : ''}">Race track</a><a href="${link('space')}" class="${space ? 'on' : ''}">Space station</a></div>
       <div class="grid tap">
         <b>Left thumb</b><span>move · push past the ring to sprint</span>
         <b>Right thumb</b><span>drag anywhere to look</span>
@@ -391,7 +394,7 @@ export class Hud {
       <div class="row"><span>Sun rays</span><input type="checkbox" name="sunRays"></div>
       <div class="row"><span>Graphics</span><select name="graphics"><option value="auto">Auto (tuned for this device)</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
       <div class="row tune"><span class="tuned"></span><button class="retune">Re-tune</button></div>
-      <div class="buttons"><button class="play">Play</button><button class="reset" title="The scene as it started (R)">Reset</button></div>
+      <div class="buttons"><button class="play">Play</button></div>
     </div>`;
     document.body.append(this.menu);
     this.loading.className = 'loading';
@@ -419,7 +422,13 @@ export class Hud {
       onChange();
     });
     (this.menu.querySelector('.play') as HTMLButtonElement).addEventListener('click', onPlay);
-    (this.menu.querySelector('.reset') as HTMLButtonElement).addEventListener('click', () => this.onReset());
+    // The bar across the top: the scenes, and the scene as it started. Above the menu too (with the pointer
+    // locked in play it can't be clicked: there it shows where you are, and R resets)
+    const bar = document.createElement('nav');
+    bar.className = 'topbar';
+    bar.innerHTML = `<a href="${link(null)}" class="${track || space ? '' : 'on'}">City</a><a href="${link('track')}" class="${track ? 'on' : ''}">Track</a><a href="${link('space')}" class="${space ? 'on' : ''}">Space</a><span class="sep"></span><button class="reset" title="The scene as it started">Reset<kbd>R</kbd></button>`;
+    (bar.querySelector('.reset') as HTMLButtonElement).addEventListener('click', () => this.onReset());
+    document.body.append(bar);
   }
 
   /** What the device tuning chose, shown under the Graphics setting. */
