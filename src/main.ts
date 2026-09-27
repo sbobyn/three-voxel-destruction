@@ -1069,7 +1069,13 @@ async function startSky(): Promise<void> {
   skyIndex = await fetch('hdri/index.json')
     .then((r) => (r.ok ? (r.json() as Promise<Record<string, SkyInfo>>) : null))
     .catch(() => null);
-  sky = SCENE === 'space' ? new SpaceSky(new THREE.Vector3(...HUB)) : new CitySky(view.sunDirection);
+  if (SCENE === 'space') {
+    const space = new SpaceSky(new THREE.Vector3(...HUB));
+    // Its clouds are drawn on a quad on the camera, once their noise volumes are made
+    view.camera.add(space.clouds.object);
+    await space.clouds.load(view.renderer);
+    sky = space;
+  } else sky = new CitySky(view.sunDirection);
   view.scene.add(sky.object);
   sky.update(view.camera, 0);
   setSun(settings.hour);

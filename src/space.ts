@@ -6,7 +6,8 @@
 // thin blue atmosphere glowing round its limb.
 
 import * as THREE from 'three/webgpu';
-import { cameraPosition, clamp, cross, dot, float, floor, fract, hash, length, max, mix, mx_noise_float, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { OrbitClouds } from './orbit-clouds.ts';
+import { cameraPosition, clamp, dot, float, floor, fract, hash, length, max, mix, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /** The Earth's radius (m, scaled), and how far under the station its top is. */
 export const EARTH_RADIUS = 5000;
@@ -45,6 +46,9 @@ function bicubic(map: THREE.Texture, at: THREE.Node<'vec2'>, size: [number, numb
   return mix(mix(s3, s2, sx), mix(s1, s0, sx), sy) as unknown as THREE.Node<'vec4'>;
 }
 
+/** The clouds' sun and sky light, against the Earth's surface as the Earth shader lights it. */
+const CLOUD_LIGHT = 1.4;
+
 export class SpaceSky {
   readonly object = new THREE.Group();
   /** Towards the sun (unit), as the city's sky has it: main.ts sets it. */
@@ -55,6 +59,8 @@ export class SpaceSky {
   private readonly sunUniform = uniform(new THREE.Vector3());
   private readonly clock = uniform(0);
   private readonly stars: THREE.Mesh;
+  /** The clouds over the Earth (on a quad on the camera: main.ts adds it there and loads them). */
+  readonly clouds: OrbitClouds;
 
   /** `centre`: the point the Earth is under (the station's middle). */
   constructor(centre: THREE.Vector3) {
@@ -63,9 +69,6 @@ export class SpaceSky {
     day.colorSpace = THREE.SRGBColorSpace;
     day.anisotropy = 8;
     day.wrapS = THREE.RepeatWrapping;
-    const clouds = loader.load('space/clouds.webp');
-    clouds.wrapS = THREE.RepeatWrapping;
-    clouds.anisotropy = 8;
 
     // The sky: stars in three sizes, hashed from the direction, and the sun's disc with its glare
     const skyMat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide, depthWrite: false, fog: false });
@@ -97,58 +100,14 @@ export class SpaceSky {
     const view = normalize(cameraPosition.sub(positionWorld));
     const light = dot(n, this.sunUniform);
     const lit = smoothstep(-0.08, 0.25, light);
-    // Up close the maps are coarse (a texel some 8 m across for the land, 15 m for the clouds,
-    // a degree or so of view straight down), and sampled plainly they show as blocks. So both
-    // are read bicubic (smooth, no texel corners), and the cloud map only says where there's
-    // cloud: its edges and texture come from noise down to a few metres, each finer octave
-    // fading out with distance before it would shimmer
-    const far = length(positionWorld.sub(cameraPosition));
+    // The land and sea, read bicubic (magnified straight down, plain bilinear shows each texel's square), and
+    // the sun's glint off open sea (the map's blue over its red). The clouds are a layer of their own, marched
+    // over this (orbit-clouds.ts).
     const ground = bicubic(day, uv(), [4096, 2048]).rgb;
-    const cover = bicubic(clouds, uv().add(vec2(this.clock.mul(0.0015), 0)), [2048, 1024]).r;
-    // Clouds as they look from orbit: the map's own shapes, eroded at their edges by fractal
-    // noise (five octaves, coarse to fine, each fading out with distance before it would
-    // shimmer) into wisps and ragged fringes, thin cover translucent, thick cover solid and
-    // textured. The noise is at this Earth's scale (a metre here is over a kilometre).
-    const fade = (from: number, to: number) => smoothstep(from, to, far);
-    const octaves: [number, number, number, number][] = [
-      [140, 0.5, 9000, 8000],
-      [48, 0.27, 3600, 2200],
-      [17, 0.2, 1500, 800],
-      [6, 0.13, 650, 320],
-      [2.2, 0.08, 300, 160],
-    ];
-    const fbm = (q: THREE.Node<'vec3'>) => {
-      let sum = float(0) as unknown as THREE.Node<'float'>;
-      for (const [size, weight, from, to] of octaves) sum = sum.add(mx_noise_float(q.mul(1 / size)).mul(weight).mul(fade(from, to))) as unknown as THREE.Node<'float'>;
-      return sum;
-    };
-    const thickness = (q: THREE.Node<'vec3'>) => {
-      // How much the noise eats away here (0 to 0.5): thin cover is eaten through, thick isn't
-      const erode = fbm(q).mul(0.5).add(0.5).clamp(0, 1).mul(0.5);
-      return clamp(cover.sub(erode).div(float(1).sub(erode)), 0, 1);
-    };
-    const p = positionWorld;
-    const density = thickness(p);
-    const cloud = smoothstep(0.0, 0.38, density);
-    // Relief, gently: the fractal texture's slope lit by the sun, so the thicker heaps catch
-    // the light and the far sides of them are a little grey
-    const east = normalize(cross(n, vec3(0, 1, 0)));
-    const north = cross(east, n);
-    const step = float(0.6);
-    const dx = thickness(p.add(east.mul(step))).sub(density);
-    const dy = thickness(p.add(north.mul(step))).sub(density);
-    const bump = normalize(n.mul(0.2).sub(east.mul(dx)).sub(north.mul(dy)));
-    const towardSun = normalize(this.sunUniform.sub(n.mul(dot(this.sunUniform, n))));
-    const lighting = clamp(dot(bump, this.sunUniform).mul(0.55).add(0.55), 0, 1.1);
-    // Thin cloud greyer (the sea's blue through it comes from the mix below), thick bright
-    const tone = mix(vec3(0.55, 0.6, 0.68), vec3(1.02, 1.01, 0.99), clamp(lighting, 0, 1)).mul(mix(float(0.82), float(1.03), smoothstep(0.1, 0.8, density)));
-    const shadowOnSea = smoothstep(0.05, 0.6, thickness(p.sub(towardSun.mul(20)))).mul(0.35);
-    const land = ground.mul(float(1).sub(shadowOnSea));
-    // The sun's glint off open sea (the map's blue over its red), under no cloud nor its shadow
-    const sea = smoothstep(0.02, 0.1, ground.b.sub(ground.r)).mul(float(1).sub(cloud)).mul(float(1).sub(shadowOnSea.mul(2)).max(0));
+    const sea = smoothstep(0.02, 0.1, ground.b.sub(ground.r));
     const mirrored = reflect(view.negate(), n);
     const glint = pow(max(dot(mirrored, this.sunUniform), 0), 180).mul(2.5).add(pow(max(dot(mirrored, this.sunUniform), 0), 18).mul(0.12));
-    const surface = mix(land.mul(1.2), tone, cloud.mul(0.97)).add(vec3(1, 0.95, 0.85).mul(glint.mul(sea)));
+    const surface = ground.mul(1.2).add(vec3(1, 0.95, 0.85).mul(glint.mul(sea)));
     const rim = pow(float(1).sub(clamp(dot(n, view), 0, 1)), 3);
     const haze = vec3(0.35, 0.6, 1).mul(rim.mul(0.9).add(0.08));
     // Day: the surface and its haze; night: nearly black, a faint blue at the rim
@@ -186,6 +145,7 @@ export class SpaceSky {
     air.position.copy(earthCentre);
     air.renderOrder = 0;
 
+    this.clouds = new OrbitClouds(earthCentre, EARTH_RADIUS);
     this.object.add(this.stars, earth, air);
     this.sunUniform.value.copy(this.sun);
   }
@@ -200,6 +160,7 @@ export class SpaceSky {
     this.stars.position.copy(camera.position);
     this.sunUniform.value.copy(this.sun);
     this.clock.value = time;
+    if (this.clouds.ready) this.clouds.update(camera as THREE.PerspectiveCamera, this.sun, this.sunColor, CLOUD_LIGHT);
   }
 
   setQuality(_quality: string): void {}
