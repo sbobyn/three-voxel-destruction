@@ -6,11 +6,44 @@
 // thin blue atmosphere glowing round its limb.
 
 import * as THREE from 'three/webgpu';
-import { cameraPosition, clamp, dot, float, floor, fract, hash, length, max, mix, mx_noise_float, normalize, positionWorld, pow, select, smoothstep, texture, uniform, uv, vec2, vec3 } from 'three/tsl';
+import { cameraPosition, clamp, dot, float, floor, fract, hash, length, max, mix, mx_noise_float, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /** The Earth's radius (m, scaled), and how far under the station its top is. */
 export const EARTH_RADIUS = 5000;
 const ALTITUDE = 350;
+
+/**
+ * A texture read bicubic (B-spline, from four bilinear reads): smooth where it's magnified,
+ * where plain bilinear shows each texel's square. `size`: the texture's texels.
+ */
+function bicubic(map: THREE.Texture, at: THREE.Node<'vec2'>, size: [number, number]): THREE.Node<'vec4'> {
+  const texels = vec2(size[0], size[1]);
+  const st = at.mul(texels).sub(0.5);
+  const f = fract(st);
+  const i = st.sub(f);
+  // Cubic B-spline weights for the four texels along each axis
+  const cubic = (v: THREE.Node<'float'>) => {
+    const n = vec4(1, 2, 3, 4).sub(v);
+    const c = n.mul(n).mul(n);
+    const x = c.x;
+    const y = c.y.sub(c.x.mul(4));
+    const z = c.z.sub(c.y.mul(4)).add(c.x.mul(6));
+    const w = float(6).sub(x).sub(y).sub(z);
+    return vec4(x, y, z, w).div(6);
+  };
+  const cx = cubic(f.x);
+  const cy = cubic(f.y);
+  const corners = vec4(i.x, i.x, i.y, i.y).add(vec4(-0.5, 1.5, -0.5, 1.5));
+  const sums = vec4(cx.x.add(cx.y), cx.z.add(cx.w), cy.x.add(cy.y), cy.z.add(cy.w));
+  const offset = corners.add(vec4(cx.y, cx.w, cy.y, cy.w).div(sums)).div(vec4(texels.x, texels.x, texels.y, texels.y));
+  const s0 = texture(map, vec2(offset.x, offset.z));
+  const s1 = texture(map, vec2(offset.y, offset.z));
+  const s2 = texture(map, vec2(offset.x, offset.w));
+  const s3 = texture(map, vec2(offset.y, offset.w));
+  const sx = sums.x.div(sums.x.add(sums.y));
+  const sy = sums.z.div(sums.z.add(sums.w));
+  return mix(mix(s3, s2, sx), mix(s1, s0, sx), sy) as unknown as THREE.Node<'vec4'>;
+}
 
 export class SpaceSky {
   readonly object = new THREE.Group();
@@ -29,6 +62,7 @@ export class SpaceSky {
     const day = loader.load('space/earth.webp');
     day.colorSpace = THREE.SRGBColorSpace;
     day.anisotropy = 8;
+    day.wrapS = THREE.RepeatWrapping;
     const clouds = loader.load('space/clouds.webp');
     clouds.wrapS = THREE.RepeatWrapping;
     clouds.anisotropy = 8;
@@ -63,15 +97,30 @@ export class SpaceSky {
     const view = normalize(cameraPosition.sub(positionWorld));
     const light = dot(n, this.sunUniform);
     const lit = smoothstep(-0.08, 0.25, light);
-    // The maps give a texel some 8 m (the land) and 15 m (the clouds) across, a degree or so
-    // of view straight down: noise finer than that breaks up the cloud edges and grains the
-    // land and sea, faded out towards the horizon where the texels are fine already
-    const near = smoothstep(2200, 600, length(positionWorld.sub(cameraPosition)));
-    const fine = mx_noise_float(positionWorld.mul(0.035)).mul(0.6).add(mx_noise_float(positionWorld.mul(0.12)).mul(0.3)).mul(near);
-    const ground = texture(day, uv()).rgb.mul(fine.mul(0.12).add(1));
-    const cover = texture(clouds, uv().add(vec2(this.clock.mul(0.0015), 0))).r;
-    const cloud = smoothstep(0.18, 0.85, cover.add(fine.mul(0.35).mul(cover.mul(float(1).sub(cover)).mul(4))));
-    const surface = mix(ground.mul(1.2), vec3(0.95, 0.96, 1), cloud.mul(0.95));
+    // Up close the maps are coarse (a texel some 8 m across for the land, 15 m for the clouds,
+    // a degree or so of view straight down), and sampled plainly they show as blocks. So both
+    // are read bicubic (smooth, no texel corners), and the cloud map only says where there's
+    // cloud: its edges and texture come from noise down to a few metres, each finer octave
+    // fading out with distance before it would shimmer
+    const far = length(positionWorld.sub(cameraPosition));
+    const ground = bicubic(day, uv(), [4096, 2048]).rgb;
+    const cover = bicubic(clouds, uv().add(vec2(this.clock.mul(0.0015), 0)), [2048, 1024]).r;
+    const p = positionWorld;
+    const octave = (scale: number, weight: number, fadeFrom: number, fadeTo: number) =>
+      mx_noise_float(p.mul(1 / scale)).mul(weight).mul(smoothstep(fadeFrom, fadeTo, far));
+    const detail = octave(420, 0.5, 9000, 8000).add(octave(130, 0.3, 4000, 2500)).add(octave(40, 0.18, 1800, 900)).add(octave(12, 0.1, 700, 300));
+    // Thin cover breaks into cells and wisps, thick cover stays whole; the edges are sharp
+    const density = cover.mul(1.3).add(detail.mul(0.5)).sub(0.3);
+    const cloud = smoothstep(0.04, 0.22, density);
+    // Thicker in the middles, a little darker at the ragged edges
+    const tone = mix(vec3(0.72, 0.75, 0.8), vec3(0.97, 0.98, 1), smoothstep(0.0, 0.6, density));
+    // The ground under a cloud's edge is shaded a touch (the cloud's shadow, near enough)
+    const land = ground.mul(float(1).sub(smoothstep(-0.1, 0.25, density).mul(0.25))).mul(detail.mul(0.1).add(1));
+    // The sun's glint off open sea (the map's blue over its red), rippled, under no cloud
+    const sea = smoothstep(0.02, 0.1, ground.b.sub(ground.r)).mul(float(1).sub(cloud));
+    const mirrored = reflect(view.negate(), n);
+    const glint = pow(max(dot(mirrored, this.sunUniform), 0), 180).mul(2.5).add(pow(max(dot(mirrored, this.sunUniform), 0), 18).mul(0.12));
+    const surface = mix(land.mul(1.2), tone, cloud.mul(0.96)).add(vec3(1, 0.95, 0.85).mul(glint.mul(sea).mul(detail.mul(0.3).add(1))));
     const rim = pow(float(1).sub(clamp(dot(n, view), 0, 1)), 3);
     const haze = vec3(0.35, 0.6, 1).mul(rim.mul(0.9).add(0.08));
     // Day: the surface and its haze; night: nearly black, a faint blue at the rim
@@ -80,9 +129,10 @@ export class SpaceSky {
     earthMat.colorNode = mix(nightColour, dayColour, lit) as unknown as THREE.Node<'color'>;
     const earth = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS, 192, 96), earthMat);
     earth.position.copy(earthCentre);
-    // Turned so the Atlantic and Africa's west coast lie under the station, the sphere's poles along y
-    earth.rotation.set(Math.PI / 2, 0, 0);
-    earth.rotateY(-0.5);
+    // The poles along y (the sphere's own axis), so the station is over the tropics, not a pole
+    // (where the map's meridians meet and smear): turned about them to put the Atlantic off
+    // West Africa underneath (the map's 10 degrees west), tipped a little north
+    earth.rotation.set(-0.25, -1.4, 0, 'XYZ');
     earth.renderOrder = -1;
 
     // The atmosphere: a shell round the Earth, its glow worked out along each view ray from how
