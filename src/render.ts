@@ -441,8 +441,8 @@ export class CityRenderer {
     this.sun.shadow.mapSize.setScalar(quality === 'high' ? 4096 : 2048);
     this.rays.raymarchSteps.value = quality === 'high' ? 48 : 24;
     this.smokePass.setResolutionScale(SMOKE_SCALE[quality]);
-    this.sun.shadow.map?.dispose();
-    this.sun.shadow.map = null;
+    // (The shadow map takes its new size at its next render: dropping it here left the sun shafts, rebuilt with
+    // the post passes, without one, as three puts the shadow's map back only when it first builds the shadow)
     this.setResolutionScale(this.resolutionScale);
   }
 
