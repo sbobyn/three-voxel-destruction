@@ -5,15 +5,27 @@
 export class Sounds {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  /** After the master: a low-pass that muffles everything (in space), and a low shelf that keeps its weight. */
+  private muffle: BiquadFilterNode | null = null;
+  private body: BiquadFilterNode | null = null;
   private noise: AudioBuffer | null = null;
   volume = 0.7;
+  /**
+   * Heard in space: no air to carry it, so what reaches you comes through the station's hull and your suit, dull
+   * and low (everything low-passed, the lows kept up).
+   */
+  muffled = false;
 
   /** Start the audio (browsers only allow it after a click). */
   resume(): void {
     if (!this.ctx) {
       this.ctx = new AudioContext();
       this.master = this.ctx.createGain();
-      this.master.connect(this.ctx.destination);
+      this.muffle = this.ctx.createBiquadFilter();
+      this.body = this.ctx.createBiquadFilter();
+      this.body.type = 'lowshelf';
+      this.body.frequency.value = 150;
+      this.master.connect(this.muffle).connect(this.body).connect(this.ctx.destination);
       const n = this.ctx.sampleRate * 3;
       this.noise = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
       const d = this.noise.getChannelData(0);
@@ -21,13 +33,15 @@ export class Sounds {
     }
     void this.ctx.resume();
     this.master!.gain.value = this.volume;
+    this.muffle!.frequency.value = this.muffled ? 380 : this.ctx.sampleRate / 2;
+    this.body!.gain.value = this.muffled ? 4 : 0;
   }
 
   /** Everything played, as a stream too (for recording the game with its sound). */
   tap(): MediaStream | null {
     if (!this.ctx || !this.master) return null;
     const out = this.ctx.createMediaStreamDestination();
-    this.master.connect(out);
+    this.body!.connect(out);
     return out.stream;
   }
 

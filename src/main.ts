@@ -555,8 +555,9 @@ async function start(): Promise<void> {
   }
   effects = startEffects();
   if (SCENE === 'space') {
-    // Vacuum: chips and smoke fly on as thrown, nothing falls, nothing to land on
+    // Vacuum: chips and smoke fly on as thrown, nothing falls, nothing to land on, sound's muffled
     chips.vacuum = shards.vacuum = true;
+    sounds.muffled = true;
     if (smoke) {
       smoke.gravity.value = 0;
       smoke.air.value = 0;
