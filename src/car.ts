@@ -9,7 +9,7 @@
 // what it drives into that still stands, it breaks or is stopped by (main.ts).
 
 import * as THREE from 'three/webgpu';
-import { attribute, float, mix, positionLocal, select, smoothstep, uniform, vec3 } from 'three/tsl';
+import { attribute, float, mix, mx_noise_float, positionLocal, select, smoothstep, uniform, vec3 } from 'three/tsl';
 import { edgeShade } from './look.ts';
 import { type City, State, VOXEL } from './world.ts';
 
@@ -235,7 +235,7 @@ function bodyCells(): Map<string, Finish> {
 }
 
 /** Cells → a mesh of their open faces, edge-shaded like the world's voxels (`origin` in cells). */
-function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number], lights: Lights): THREE.Mesh {
+function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number], look: Look): THREE.Mesh {
   const pos: number[] = [];
   const nor: number[] = [];
   const col: number[] = [];
@@ -283,12 +283,17 @@ function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number],
   const m = new THREE.MeshStandardNodeMaterial();
   // A much lighter edge than the world's voxels: at a quarter of their size, the full darkening draws contour lines
   const shade = edgeShade(attribute('local', 'vec3') as unknown as THREE.Node<'vec3'>, vec3(1, 1, 1), 0.1).mul(0.18).add(0.82);
-  m.colorNode = attribute('color', 'vec3').mul(shade) as unknown as THREE.Node<'color'>;
-  m.roughnessNode = attribute('rough', 'float') as unknown as THREE.Node<'float'>;
+  // Wear: soot and scorch in patches that spread over it as it's knocked about (the patches from where it is on the
+  // car, so they sit still on it), the paint dulled under them
+  const where = positionLocal.mul(1.8);
+  const patches = mx_noise_float(where).mul(0.6).add(mx_noise_float(where.mul(3.1)).mul(0.25));
+  const soot = smoothstep(float(0.55).sub(look.wear.mul(1.1)), float(0.75).sub(look.wear.mul(1.1)), patches).mul(look.wear.mul(1.6).min(1));
+  m.colorNode = mix(attribute('color', 'vec3').mul(shade), vec3(0.03, 0.028, 0.026), soot.mul(0.9)) as unknown as THREE.Node<'color'>;
+  m.roughnessNode = mix(attribute('rough', 'float'), float(0.95), soot) as unknown as THREE.Node<'float'>;
   m.metalnessNode = attribute('metal', 'float') as unknown as THREE.Node<'float'>;
   // Lights glow: the tail lights by the brakes (dim running lights to bright), the reversing lights in reverse
   const which = attribute('lamp', 'float');
-  const glowing = attribute('glow', 'float').mul(select(which.lessThan(0.5), float(1), select(which.lessThan(1.5), lights.brake, lights.reverse)));
+  const glowing = attribute('glow', 'float').mul(select(which.lessThan(0.5), float(1), select(which.lessThan(1.5), look.brake, look.reverse)));
   m.emissiveNode = attribute('color', 'vec3').mul(glowing) as unknown as THREE.Node<'color'>;
   const mesh = new THREE.Mesh(g, m);
   mesh.castShadow = true;
@@ -355,9 +360,11 @@ const GRIP = 14;
  */
 const BRAKE_LIGHT = [0.12, 2];
 const REVERSE_LIGHT = [0, 6];
-interface Lights {
+/** What the car's shader follows: the tail and reversing lights' glow, and how worn it is (0 new, 1 wrecked). */
+interface Look {
   brake: THREE.UniformNode<'float', number>;
   reverse: THREE.UniformNode<'float', number>;
+  wear: THREE.UniformNode<'float', number>;
 }
 
 const GEARS = [0, 55, 90, 125, 160, 195, 230, 300];
@@ -386,8 +393,10 @@ export class Car {
   rockets = 0;
   wantGuns = false;
   wantRockets = false;
-  /** How hard the tail lights glow (dim running lights; bright when braking), and the reversing lights (in reverse). */
-  readonly lights: Lights = { brake: uniform(BRAKE_LIGHT[0]), reverse: uniform(REVERSE_LIGHT[0]) };
+  /** How hard the tail lights glow (dim running lights; bright when braking) and the reversing lights (in reverse), and its wear. */
+  readonly look: Look = { brake: uniform(BRAKE_LIGHT[0]), reverse: uniform(REVERSE_LIGHT[0]), wear: uniform(0) };
+  /** What's left of it (1 new, 0 wrecked). */
+  health = 1;
   /** The pose at the start of the world's step, to draw it between steps; and at the start of the sub-step, to undo it. */
   private readonly prev = new THREE.Vector3();
   private prevHeading = 0;
@@ -404,8 +413,8 @@ export class Car {
   private reversing = false;
 
   constructor() {
-    const brake = this.lights;
-    this.body = voxelMesh(bodyCells(), [HALF_L / CELL, HALF_W / CELL, 0], brake);
+    const look = this.look;
+    this.body = voxelMesh(bodyCells(), [HALF_L / CELL, HALF_W / CELL, 0], look);
     this.object.add(this.body);
     this.body.add(exhaustTips());
     const wheel = wheelCells();
@@ -418,13 +427,13 @@ export class Car {
     ]) {
       const hub = new THREE.Group();
       hub.position.set(x, s * TRACK, WHEEL_R);
-      hub.add(voxelMesh(wheel, [0, half, 0], brake));
+      hub.add(voxelMesh(wheel, [0, half, 0], look));
       this.object.add(hub);
       this.wheels.push(hub);
     }
     // Machine guns in the bonnet either side of its valley
     for (const s of [1, -1]) {
-      const gun = voxelMesh(gunCells(), [0.5, 0.5, 0], brake);
+      const gun = voxelMesh(gunCells(), [0.5, 0.5, 0], look);
       gun.position.set(1.25, s * 0.5, 0.5);
       this.body.add(gun);
       this.mgs.push(gun);
@@ -433,9 +442,9 @@ export class Car {
     for (const s of [1, -1]) {
       const pivot = new THREE.Group();
       pivot.position.set(-1.35, s * 0.62, 0.72);
-      const arm = voxelMesh(armCells(ARM), [1, 1, 0], brake);
+      const arm = voxelMesh(armCells(ARM), [1, 1, 0], look);
       pivot.add(arm);
-      const launcher = voxelMesh(launcherCells(), [0.5, 0.5, 0.5], brake);
+      const launcher = voxelMesh(launcherCells(), [0.5, 0.5, 0.5], look);
       launcher.position.set(0, 0, (ARM + 1) * CELL);
       pivot.add(launcher);
       this.body.add(pivot);
@@ -557,8 +566,8 @@ export class Car {
     this.object.rotation.set(0, 0, this.prevHeading + dh * alpha);
     this.body.rotation.set(this.lean, this.pitch, 0);
     for (const [k, w] of this.wheels.entries()) w.rotation.set(0, this.roll, k < 2 ? this.steer : 0, 'ZYX');
-    this.lights.brake.value = BRAKE_LIGHT[this.braking ? 1 : 0];
-    this.lights.reverse.value = REVERSE_LIGHT[this.reversing ? 1 : 0];
+    this.look.brake.value = BRAKE_LIGHT[this.braking ? 1 : 0];
+    this.look.reverse.value = REVERSE_LIGHT[this.reversing ? 1 : 0];
     // Machine guns: up out of the bonnet
     const g = THREE.MathUtils.smoothstep(this.guns, 0, 1);
     for (const m of this.mgs) {
@@ -584,6 +593,25 @@ export class Car {
       guns: this.mgs.map((m) => m.localToWorld(new THREE.Vector3(9.5 * CELL, 0, 3.5 * CELL))),
       rockets: this.arms.map(({ launcher }) => launcher.localToWorld(new THREE.Vector3(6 * CELL, 0, 0))),
     };
+  }
+
+  /** Knocked about: `amount` (a share of a new car's health) off what's left; the soot spreads as it goes. */
+  hurt(amount: number): void {
+    // (A crumb left over is nothing: 0.25 less a blow of 0.25 must be wrecked, not a hair above it)
+    this.health = this.health - amount < 0.005 ? 0 : this.health - amount;
+    this.look.wear.value = 1 - this.health;
+  }
+
+  /** As new. */
+  repair(): void {
+    this.health = 1;
+    this.look.wear.value = 0;
+  }
+
+  /** The engine, behind the cabin (world, m): where the smoke and fire of a damaged car come out. */
+  engine(): THREE.Vector3 {
+    this.object.updateMatrixWorld(true);
+    return this.body.localToWorld(new THREE.Vector3(-1.1, 0, 0.95));
   }
 
   /** Where the rear tyres touch the ground (world, m). */

@@ -59,6 +59,11 @@ export class SkidMarks {
       }
       const length = Math.hypot(at.x - from.x, at.y - from.y);
       if (length < STEP) return;
+      // (Metres at once: the car was put somewhere new, not driven there)
+      if (length > 3) {
+        from.copy(at);
+        return;
+      }
       // A segment from where the last ended to here, flat on the ground (a little longer: no gaps in bends)
       dir.set((at.x - from.x) / length, (at.y - from.y) / length, 0);
       side.set(-dir.y, dir.x, 0).multiplyScalar(WIDTH);
