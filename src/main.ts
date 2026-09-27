@@ -277,6 +277,7 @@ function setDriving(on: boolean): void {
   player.yaw = car.heading;
   player.pitch = 0;
   car.wantGuns = false;
+  rocketDue = false;
   byCar = true;
   hud.toast('On foot · F by the car to get back in');
 }
@@ -806,10 +807,10 @@ function crash(hits: number[]): boolean {
 }
 
 /**
- * The car's weapons. Machine guns (left button): a quick crack each, alternating barrels,
- * knocking a fist-sized bite out of what they hit, their tracers flying fast. Rocket
- * launchers (right button): a rocket's blast, each launcher reloading for a while after its
- * shot, so two quick ones then a wait.
+ * The car's weapons. Rocket launchers (left button): a rocket's blast, each launcher reloading
+ * for a while after its shot, so two quick ones then a wait. Machine guns (right button): a
+ * quick crack each, alternating barrels, knocking a fist-sized bite out of what they hit, their
+ * tracers flying fast.
  */
 const BULLET: ToolSpec = { name: 'Machine gun', icon: '', hint: '', radius: 0.32, core: 0.55, push: 5, reach: 400, cooldown: 0.075, auto: true };
 const CAR_ROCKET: ToolSpec = { name: 'Rocket', icon: '', hint: '', radius: 1.8, core: 0.45, push: 13, explosive: true, reach: 600, cooldown: 0.3, auto: true };
@@ -825,6 +826,8 @@ let launcher = 0;
 /** Seconds since each weapon last fired (they fold away after a while). */
 let gunsIdle = 0;
 let rocketsIdle = 0;
+/** A click's rocket, waiting for the launchers to swing up. */
+let rocketDue = false;
 /** The camera's eye and aim this frame (the weapons fire where it looks). */
 const aimFrom = new THREE.Vector3();
 const aimDir = new THREE.Vector3(1, 0, 0);
@@ -1823,8 +1826,19 @@ function tick(now: number): void {
     cooldown -= dt;
     if (driving && car) {
       // Each weapon comes up while its button's held, fires once it's up, and folds away after a while
+      // (a click's rocket goes as soon as the launchers are up)
       gunCooldown -= dt;
-      if (held || wantFire) {
+      if (wantFire) rocketDue = true;
+      if (held || rocketDue) {
+        car.wantRockets = true;
+        rocketsIdle = 0;
+        if (car.rockets > 0.95 && cooldown <= 0 && simTime >= loaded[launcher]) {
+          fireRocket();
+          cooldown = CAR_ROCKET.cooldown;
+          rocketDue = false;
+        }
+      } else if ((rocketsIdle += dt) > 3) car.wantRockets = false;
+      if (aiming) {
         car.wantGuns = true;
         gunsIdle = 0;
         if (car.guns > 0.95 && gunCooldown <= 0) {
@@ -1832,14 +1846,6 @@ function tick(now: number): void {
           gunCooldown = BULLET.cooldown;
         }
       } else if ((gunsIdle += dt) > 2.5) car.wantGuns = false;
-      if (aiming) {
-        car.wantRockets = true;
-        rocketsIdle = 0;
-        if (car.rockets > 0.95 && cooldown <= 0 && simTime >= loaded[launcher]) {
-          fireRocket();
-          cooldown = CAR_ROCKET.cooldown;
-        }
-      } else if ((rocketsIdle += dt) > 3) car.wantRockets = false;
     } else {
       const stride = Math.floor(player.walk / Math.PI);
       const move = input();
@@ -1926,7 +1932,7 @@ function tick(now: number): void {
   focusAt += (focusWant - focusAt) * Math.min(1, dt * 5);
   // (Not in orbit: the stars and the Earth are as sharp as the station)
   const dofOn = settings.dof && view.quality === 'high' && SCENE !== 'space';
-  // (In the car the right button fires rockets: no zoom)
+  // (In the car the right button fires the machine guns: no zoom)
   const zoomed = aiming && !driving;
   dofAmount += ((dofOn ? (zoomed ? 12 : 8) : 0) - dofAmount) * Math.min(1, dt * 6);
   // In focus: everything up to the far side of the block being destroyed (or what's aimed at,
@@ -1985,7 +1991,7 @@ Object.assign(window, {
     get flying() {
       return rockets;
     },
-    /** The right button (aim on foot, rockets in the car). */
+    /** The right button (aim on foot, the machine guns in the car). */
     aim: (on: boolean) => {
       aiming = on;
     },

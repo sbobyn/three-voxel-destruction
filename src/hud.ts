@@ -172,8 +172,8 @@ const DRIVING = [
   ['A / D', 'steer'],
   ['Space', 'handbrake'],
   ['Shift', 'boost'],
-  ['Mouse L', 'machine guns'],
-  ['Mouse R', 'rockets'],
+  ['Mouse L', 'rockets'],
+  ['Mouse R', 'machine guns'],
   ['F', 'get out'],
   ['X', 'slow motion'],
   ['Esc', 'menu'],
@@ -385,7 +385,7 @@ export class Hud {
         <b>F</b><span>fly or walk (walking: Space jump, C crouch, Shift sprint)</span>
         <b>X</b><span>slow motion (the player moves at full speed: fly round a collapse)</span>
         <b>T · R</b><span>${space ? 'turn the sun' : 'time of day'} · rebuild the ${track ? 'track' : space ? 'station' : 'city'}</span>
-        ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · Shift boost · left button: the machine guns · right button: the rockets · F gets out (and back in)</span>' : ''}
+        ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · Shift boost · left button: the rockets · right button: the machine guns · F gets out (and back in)</span>' : ''}
       </div>
       <div class="row"><span>Look sensitivity</span><input type="range" name="sensitivity" min="0.2" max="3" step="0.05"></div>
       <div class="row"><span>Field of view</span><input type="range" name="fov" min="60" max="110" step="1"></div>

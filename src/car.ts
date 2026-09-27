@@ -9,7 +9,7 @@
 // what it drives into that still stands, it breaks or is stopped by (main.ts).
 
 import * as THREE from 'three/webgpu';
-import { attribute, float, mix, uniform, vec3 } from 'three/tsl';
+import { attribute, float, select, uniform, vec3 } from 'three/tsl';
 import { edgeShade } from './look.ts';
 import { type City, State, VOXEL } from './world.ts';
 
@@ -40,13 +40,16 @@ const REAR_AXLE = -1.3;
 const TRACK = 0.84;
 const WHEEL_W = 0.3;
 
-type Finish = { colour: number; rough: number; metal: number; glow: number; brake?: boolean };
+/** A cell's look; a lamp's glow switched by the brakes or reversing (else always on). */
+type Finish = { colour: number; rough: number; metal: number; glow: number; lamp?: 'brake' | 'reverse' };
 const PAINT: Finish = { colour: 0x8fa6bb, rough: 0.22, metal: 0.75, glow: 0 };
 const SHADOW: Finish = { colour: 0x6f8397, rough: 0.25, metal: 0.75, glow: 0 };
 const BLACK: Finish = { colour: 0x141517, rough: 0.5, metal: 0.25, glow: 0 };
 const TINT: Finish = { colour: 0x0f161d, rough: 0.06, metal: 0.7, glow: 0 };
 const HEAD: Finish = { colour: 0xe6f0ff, rough: 0.3, metal: 0, glow: 0.9 };
-const TAIL: Finish = { colour: 0xd0120a, rough: 0.3, metal: 0, glow: 1, brake: true };
+const TAIL: Finish = { colour: 0xc40806, rough: 0.3, metal: 0, glow: 1, lamp: 'brake' };
+// (A grey lens: white paint would read as a light in the sun even when it's off)
+const REVERSE: Finish = { colour: 0x8c929c, rough: 0.2, metal: 0, glow: 1, lamp: 'reverse' };
 const PIPE: Finish = { colour: 0x6b6f75, rough: 0.3, metal: 0.9, glow: 0 };
 const YELLOW: Finish = { colour: 0xe8b810, rough: 0.4, metal: 0.3, glow: 0 };
 const GUNMETAL: Finish = { colour: 0x2a2e33, rough: 0.35, metal: 0.8, glow: 0 };
@@ -159,14 +162,16 @@ function shape(x: number, y: number, z: number): Finish | null {
   if (x > 2.02 && x < 2.2 && ay > 0.56 && ay < 0.78 && z > top - 0.08 && z < top - 0.01) return HEAD; // headlights: a thin strip at the corners
   if (ay > hw - 0.07 && x > -0.8 && x < -0.3 && z > 0.3 && z < 0.6) return BLACK; // side intakes
   if (ay > hw - 0.05 && z > 0.36 && z < 0.44 && x > -0.3 && x < 1.1) return SHADOW; // a crease along the door
-  // The tail: the diffuser under it, a dark band with two rows of short light bars across each
-  // side, the exhausts high in the middle
+  // The tail: the diffuser under it, a dark band with a row of short light bars (two cells tall)
+  // across each side and a white reversing light standing at its outer end, the exhausts high in
+  // the middle
   if (x < -2.2) {
     if (z < 0.34) return ay < 0.75 && Math.floor(ay / 0.19) % 2 === 1 && z < 0.3 ? SHADOW : BLACK;
     const band = z > 0.5 && z < 0.7 && ay > 0.28 && ay < 0.9;
     if (band) {
-      const row = (z > 0.54 && z < 0.59) || (z > 0.61 && z < 0.66);
-      const bar = ((ay - 0.32) / 0.11) % 1 < 0.62 && ay > 0.32 && ay < 0.86;
+      if (ay > 0.82) return REVERSE;
+      const row = z > 0.56 && z < 0.68;
+      const bar = ((ay - 0.32) / 0.11) % 1 < 0.62 && ay > 0.32 && ay < 0.8;
       return row && bar ? TAIL : BLACK;
     }
   }
@@ -199,7 +204,7 @@ function bodyCells(): Map<string, Finish> {
 }
 
 /** Cells → a mesh of their open faces, edge-shaded like the world's voxels (`origin` in cells). */
-function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number], brake: THREE.UniformNode<'float', number>): THREE.Mesh {
+function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number], lights: Lights): THREE.Mesh {
   const pos: number[] = [];
   const nor: number[] = [];
   const col: number[] = [];
@@ -231,7 +236,7 @@ function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number],
         rough.push(f.rough);
         metal.push(f.metal);
         glow.push(f.glow);
-        lamp.push(f.brake ? 1 : 0);
+        lamp.push(f.lamp === 'brake' ? 1 : f.lamp === 'reverse' ? 2 : 0);
       }
     }
   }
@@ -250,8 +255,9 @@ function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number],
   m.colorNode = attribute('color', 'vec3').mul(shade) as unknown as THREE.Node<'color'>;
   m.roughnessNode = attribute('rough', 'float') as unknown as THREE.Node<'float'>;
   m.metalnessNode = attribute('metal', 'float') as unknown as THREE.Node<'float'>;
-  // Lights glow; the tail lights by how hard it's braking (dim running lights to bright)
-  const glowing = attribute('glow', 'float').mul(mix(float(1), brake, attribute('lamp', 'float')));
+  // Lights glow: the tail lights by the brakes (dim running lights to bright), the reversing lights in reverse
+  const which = attribute('lamp', 'float');
+  const glowing = attribute('glow', 'float').mul(select(which.lessThan(0.5), float(1), select(which.lessThan(1.5), lights.brake, lights.reverse)));
   m.emissiveNode = attribute('color', 'vec3').mul(glowing) as unknown as THREE.Node<'color'>;
   const mesh = new THREE.Mesh(g, m);
   mesh.castShadow = true;
@@ -310,6 +316,17 @@ function armCells(n: number): Map<string, Finish> {
 const ARM = 8;
 
 /** Top gear speeds (km/h) of each of the seven gears (the first from rest). */
+/**
+ * The tail and reversing lights' glow: off (the tail lights' dim running glow) and on. (Brighter tail lights than
+ * this only turn orange through the tone mapping: they look brighter against a dimmer running glow instead.)
+ */
+const BRAKE_LIGHT = [0.12, 2];
+const REVERSE_LIGHT = [0, 6];
+interface Lights {
+  brake: THREE.UniformNode<'float', number>;
+  reverse: THREE.UniformNode<'float', number>;
+}
+
 const GEARS = [0, 62, 104, 146, 188, 232, 276, 360];
 /** Seconds of lost drive at an upshift. */
 const SHIFT = 0.16;
@@ -337,8 +354,8 @@ export class Car {
   rockets = 0;
   wantGuns = false;
   wantRockets = false;
-  /** How hard the tail lights glow (the running lights; bright when braking). */
-  readonly brakeLight = uniform(0.3);
+  /** How hard the tail lights glow (dim running lights; bright when braking), and the reversing lights (in reverse). */
+  readonly lights: Lights = { brake: uniform(BRAKE_LIGHT[0]), reverse: uniform(REVERSE_LIGHT[0]) };
   /** The pose at the start of the world's step, to draw it between steps; and at the start of the sub-step, to undo it. */
   private readonly prev = new THREE.Vector3();
   private prevHeading = 0;
@@ -352,9 +369,10 @@ export class Car {
   private lean = 0;
   private pitch = 0;
   private braking = false;
+  private reversing = false;
 
   constructor() {
-    const brake = this.brakeLight;
+    const brake = this.lights;
     this.body = voxelMesh(bodyCells(), [HALF_L / CELL, HALF_W / CELL, 0], brake);
     this.object.add(this.body);
     const wheel = wheelCells();
@@ -447,6 +465,7 @@ export class Car {
     // Engine and brakes: strong off the line, fading towards top speed; braking, then reverse
     const top = d.boost ? 95 : 78;
     this.braking = (d.throttle < 0 && along > 0.5) || (d.handbrake && Math.abs(along) > 0.5);
+    this.reversing = d.throttle < 0 && along <= 0.5;
     if (d.throttle > 0) {
       const cut = this.shifting > 0 ? 0.25 : 1;
       const push = along < 0 ? 30 : 17 * Math.max(0, 1 - (along / top) ** 2) * (d.boost ? 1.5 : 1) * cut;
@@ -504,7 +523,8 @@ export class Car {
     this.object.rotation.set(0, 0, this.prevHeading + dh * alpha);
     this.body.rotation.set(this.lean, this.pitch, 0);
     for (const [k, w] of this.wheels.entries()) w.rotation.set(0, this.roll, k < 2 ? this.steer : 0, 'ZYX');
-    this.brakeLight.value = this.braking ? 1.8 : 0.3;
+    this.lights.brake.value = BRAKE_LIGHT[this.braking ? 1 : 0];
+    this.lights.reverse.value = REVERSE_LIGHT[this.reversing ? 1 : 0];
     // Machine guns: up out of the bonnet
     const g = THREE.MathUtils.smoothstep(this.guns, 0, 1);
     for (const m of this.mgs) {
