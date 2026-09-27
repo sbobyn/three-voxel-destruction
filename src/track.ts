@@ -245,8 +245,8 @@ function gantry(w: WorldBuilder, cx: number, cy: number): void {
       const y = span / 2 - 12 + k * 5;
       w.box(put, 0, y, 24, 1, y + 3, 26, Mat.Neon, k === 4 ? 0x2bd45a : 0xd01c14);
     }
-    // A banner under the beam on the far side: chequered
-    for (let y = 3; y < span - 3; y++) for (let z = 21; z < 26; z++) put(3, y, z, Mat.Neon, (Math.floor(y / 2) + Math.floor(z / 2)) % 2 ? 0x101010 : 0xf2f2f2);
+    // A banner under the beam on the far side: two rows of checks
+    for (let y = 3; y < span - 3; y++) for (let z = 20; z < 26; z++) put(3, y, z, Mat.Neon, (Math.floor(y / 3) + Math.floor((z - 20) / 3)) % 2 ? 0x101010 : 0xf2f2f2);
   });
 }
 
