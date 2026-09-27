@@ -40,7 +40,7 @@ export class Sounds {
     }
     void this.ctx.resume();
     this.master!.gain.value = this.suit!.gain.value = this.volume;
-    this.suitFilter!.frequency.value = this.muffled ? 2400 : this.ctx.sampleRate / 2;
+    this.suitFilter!.frequency.value = this.muffled ? 1200 : this.ctx.sampleRate / 2;
     this.muffle!.frequency.value = this.muffled ? 380 : this.ctx.sampleRate / 2;
     this.body!.gain.value = this.muffled ? 4 : 0;
   }
@@ -60,31 +60,30 @@ export class Sounds {
   }
 
   /**
-   * A puff from the suit's jets (`strength` 0..1): a short pressurised "pssht", gas through a band falling as the
-   * valve shuts, with a soft thump of the kick through the suit. At most one every 70 ms, so a long push pulses.
+   * A puff from the suit's jets (`strength` 0..1): a soft, low "pfff", gas through a band falling as the valve shuts,
+   * swelling in and dying away. At most one every 0.3 s, so a long push is slow breaths, not a patter.
    */
   jet(strength: number): void {
     const { ctx } = this;
-    if (!ctx || !this.suit || ctx.currentTime - this.lastJet < 0.07) return;
+    if (!ctx || !this.suit || ctx.currentTime - this.lastJet < 0.3) return;
     this.lastJet = ctx.currentTime;
     const t = ctx.currentTime;
-    const seconds = 0.1 + 0.06 * strength + Math.random() * 0.03;
+    const seconds = 0.3 + 0.15 * strength + Math.random() * 0.08;
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
-    src.playbackRate.value = 0.9 + Math.random() * 0.2;
+    src.playbackRate.value = 0.7 + Math.random() * 0.1;
     const bp = ctx.createBiquadFilter();
     bp.type = 'bandpass';
-    bp.Q.value = 0.9;
-    const f = 1500 + Math.random() * 400;
+    bp.Q.value = 0.7;
+    const f = 550 + Math.random() * 100;
     bp.frequency.setValueAtTime(f, t);
-    bp.frequency.exponentialRampToValueAtTime(f * 0.45, t + seconds);
+    bp.frequency.exponentialRampToValueAtTime(f * 0.5, t + seconds);
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.06 + 0.1 * strength, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.12 + 0.14 * strength, t + 0.05);
     g.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
     src.connect(bp).connect(g).connect(this.suit);
     src.start(t, Math.random() * 2, seconds + 0.05);
-    this.tone(0.05 + 0.06 * strength, 110, 60, 0.07);
   }
 
   /** Noise through a low-pass falling from `from` to `to` Hz over `seconds`, at `gain`. */
