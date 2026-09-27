@@ -7,7 +7,7 @@
 
 import * as THREE from 'three/webgpu';
 import { OrbitClouds } from './orbit-clouds.ts';
-import { cameraPosition, clamp, dot, fwidth, mx_noise_float, positionLocal, float, floor, fract, hash, length, max, mix, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { cameraPosition, clamp, dot, fwidth, modelPosition, mx_noise_float, positionLocal, float, floor, fract, hash, length, max, mix, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /** The Earth's radius (m, scaled), and how far under the station its top is. */
 export const EARTH_RADIUS = 5000;
@@ -60,22 +60,28 @@ const CIRRUS_HEIGHT = 60;
  * sun (dark on the night side), faded at the grazing edge where it would pile into a white band. Its noise is in
  * its own (turning) frame, so it goes round with the Earth.
  */
-function cirrusShell(centre: THREE.Vector3, sun: THREE.UniformNode<'vec3', THREE.Vector3>): THREE.Mesh {
+function cirrusShell(sun: THREE.UniformNode<'vec3', THREE.Vector3>): THREE.Mesh {
   const material = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, fog: false });
   const p = positionLocal;
   const streaks = mx_noise_float(p.mul(vec3(0.02, 0.006, 0.006))).mul(0.6).add(mx_noise_float(p.mul(vec3(0.05, 0.016, 0.016))).mul(0.3)).add(mx_noise_float(p.mul(0.2)).mul(0.1));
   const patches = smoothstep(0.25, 0.55, mx_noise_float(p.mul(0.0022)).add(mx_noise_float(p.mul(0.007)).mul(0.3)));
-  const n = normalize(positionWorld.sub(vec3(centre.x, centre.y, centre.z)));
+  const n = normalize(positionWorld.sub(modelPosition));
   const view = normalize(cameraPosition.sub(positionWorld));
   const edge = smoothstep(0.02, 0.25, dot(n, view));
   const lit = clamp(dot(n, sun).mul(1.2).add(0.1), 0, 1);
   material.colorNode = vec3(1.0, 1.0, 1.02).mul(lit.mul(1.1).add(0.03)) as unknown as THREE.Node<'color'>;
   material.opacityNode = smoothstep(0.05, 0.7, streaks).mul(patches).mul(edge).mul(0.35) as unknown as THREE.Node<'float'>;
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS + CIRRUS_HEIGHT, 160, 80), material);
-  mesh.position.copy(centre);
   mesh.renderOrder = 1;
   return mesh;
 }
+
+/**
+ * The station's sway (rad): a slow roll and pitch of a fifth of a degree or so, each from two periods (s) that
+ * never quite line up. Seen from on board it's everything outside that sways, about the station's middle.
+ */
+const SWAY = 0.004;
+const SWAY_PERIODS = [11, 17, 13, 19];
 
 /** The clouds' sun and sky light, against the Earth's surface as the Earth shader lights it. */
 const CLOUD_LIGHT = 0.8;
@@ -94,6 +100,11 @@ export class SpaceSky {
   readonly clouds: OrbitClouds;
   /** The high, thin cirrus, a shell over the clouds. */
   private readonly cirrus: THREE.Mesh;
+  /** The Earth, its air and its cirrus, swayed about the station's middle (`pivot`). */
+  private readonly outside = new THREE.Group();
+  private readonly pivot: THREE.Vector3;
+  private readonly sway = new THREE.Quaternion();
+  private readonly earthCentre: THREE.Vector3;
   private readonly earth!: THREE.Mesh;
   private readonly earthRest!: THREE.Quaternion;
   /** How far round the orbit has turned the Earth and the sky, and back again (for the stars). */
@@ -104,6 +115,7 @@ export class SpaceSky {
 
   /** `centre`: the point the Earth is under (the station's middle). */
   constructor(centre: THREE.Vector3) {
+    this.pivot = centre.clone();
     const loader = new THREE.TextureLoader();
     const day = loader.load('space/earth.webp');
     day.colorSpace = THREE.SRGBColorSpace;
@@ -144,7 +156,7 @@ export class SpaceSky {
     // towards the limb, blue on the day side
     const earthCentre = new THREE.Vector3(centre.x, centre.y, centre.z - EARTH_RADIUS - ALTITUDE);
     const earthMat = new THREE.MeshBasicNodeMaterial({ fog: false });
-    const n = normalize(positionWorld.sub(vec3(earthCentre.x, earthCentre.y, earthCentre.z)));
+    const n = normalize(positionWorld.sub(modelPosition));
     const view = normalize(cameraPosition.sub(positionWorld));
     const light = dot(n, this.sunUniform);
     const lit = smoothstep(-0.08, 0.25, light);
@@ -178,7 +190,7 @@ export class SpaceSky {
     // glow there. Brighter where the sun is on it.
     const top = EARTH_RADIUS * 1.04;
     const airMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
-    const c = vec3(earthCentre.x, earthCentre.y, earthCentre.z);
+    const c = modelPosition;
     const ray = normalize(positionWorld.sub(cameraPosition));
     const toCentre = c.sub(cameraPosition);
     const along = dot(toCentre, ray);
@@ -195,9 +207,12 @@ export class SpaceSky {
     air.position.copy(earthCentre);
     air.renderOrder = 0;
 
-    this.clouds = new OrbitClouds(earthCentre, EARTH_RADIUS);
-    this.cirrus = cirrusShell(earthCentre, this.sunUniform);
-    this.object.add(this.stars, earth, air, this.cirrus);
+    this.clouds = new OrbitClouds(EARTH_RADIUS);
+    this.cirrus = cirrusShell(this.sunUniform);
+    this.cirrus.position.copy(earthCentre);
+    this.earthCentre = earthCentre;
+    this.outside.add(earth, air, this.cirrus);
+    this.object.add(this.stars, this.outside);
     this.sunUniform.value.copy(this.sun);
   }
 
@@ -214,11 +229,22 @@ export class SpaceSky {
     // The orbit: the Earth (and its clouds) and the stars turning together about the orbit's axis, a lap every
     // ORBIT seconds. (The sun is kept where it is, as in a dawn-to-dusk orbit: the station never goes into the dark.)
     if (this.started < 0) this.started = time;
-    this.spin.setFromAxisAngle(ORBIT_AXIS, ((time - this.started) / ORBIT) * Math.PI * 2);
+    const t = time - this.started;
+    this.spin.setFromAxisAngle(ORBIT_AXIS, (t / ORBIT) * Math.PI * 2);
     this.earth.quaternion.copy(this.spin).multiply(this.earthRest);
     this.cirrus.quaternion.copy(this.spin);
-    this.unspin.value.setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(this.spin.clone().invert()));
-    if (this.clouds.ready) this.clouds.update(camera as THREE.PerspectiveCamera, this.sun, this.sunColor, CLOUD_LIGHT, this.spin);
+    // The sway, the outside turned about the station's middle (and the stars and clouds with it)
+    const wave = (a: number, b: number, phase: number) => 0.6 * Math.sin((2 * Math.PI * t) / a + phase) + 0.4 * Math.sin((2 * Math.PI * t) / b + 2 * phase);
+    const [a, b, c, d] = SWAY_PERIODS;
+    this.sway.setFromEuler(new THREE.Euler(SWAY * wave(a, b, 0), SWAY * wave(c, d, 1), 0));
+    this.outside.quaternion.copy(this.sway);
+    this.outside.position.copy(this.pivot).sub(this.pivot.clone().applyQuaternion(this.sway));
+    const turn = this.sway.clone().multiply(this.spin);
+    this.unspin.value.setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(turn.clone().invert()));
+    if (this.clouds.ready) {
+      const centre = this.earthCentre.clone().sub(this.pivot).applyQuaternion(this.sway).add(this.pivot);
+      this.clouds.update(camera as THREE.PerspectiveCamera, centre, turn, this.sun, this.sunColor, CLOUD_LIGHT);
+    }
   }
 
   setQuality(_quality: string): void {}

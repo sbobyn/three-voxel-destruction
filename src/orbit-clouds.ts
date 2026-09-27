@@ -74,14 +74,12 @@ export class OrbitClouds {
   /** The cloud cover, baked once from cover() (it's far too dear to work out at every step of every ray). */
   private readonly map = new THREE.RenderTarget(MAP[0], MAP[1], { format: THREE.RedFormat, type: THREE.UnsignedByteType, wrapS: THREE.RepeatWrapping, depthBuffer: false });
   private readonly km: number;
-  private readonly centre: THREE.Vector3;
   /** Where the camera is from the Earth's middle (km), and its local frame, in the Earth's own (unturned) axes. */
   private readonly earthOrigin = uniform(new THREE.Vector3());
   private readonly earthFrame = uniform(new THREE.Matrix3());
 
-  /** Over the Earth of `radius` (scene units) centred at `centre`. */
-  constructor(centre: THREE.Vector3, radius: number) {
-    this.centre = centre.clone();
+  /** Over an Earth of `radius` (scene units). */
+  constructor(radius: number) {
     this.km = EARTH_KM / radius;
     this.base = makeVolumeTexture(new Uint8Array(4 * BASE_SIZE ** 3), BASE_SIZE);
     this.detail = makeVolumeTexture(new Uint8Array(4 * DETAIL_SIZE ** 3), DETAIL_SIZE);
@@ -146,12 +144,15 @@ export class OrbitClouds {
     this.object.visible = true;
   }
 
-  /** Each frame: the march's camera, sun and noise frame from the scene's camera and sun (world, unit), lit by `sunColour`. */
-  update(camera: THREE.PerspectiveCamera, sun: THREE.Vector3, sunColour: THREE.Color, brightness: number, spin: THREE.Quaternion): void {
+  /**
+   * Each frame: the march's camera, sun and noise frame from the scene's camera, the Earth's middle and how it's turned
+   * (`spin`), and the sun (world, unit), lit by `sunColour`.
+   */
+  update(camera: THREE.PerspectiveCamera, centre: THREE.Vector3, spin: THREE.Quaternion, sun: THREE.Vector3, sunColour: THREE.Color, brightness: number): void {
     const u = this.layer.uniforms;
     camera.updateMatrixWorld();
     const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-    const rel = eye.clone().sub(this.centre);
+    const rel = eye.clone().sub(centre);
     // The local frame: up the camera's radial, any tangent across
     const y = rel.clone().normalize();
     const x = new THREE.Vector3(Math.abs(y.x) < 0.9 ? 1 : 0, Math.abs(y.x) < 0.9 ? 0 : 1, 0).cross(y).normalize();
