@@ -6,7 +6,7 @@
 // thin blue atmosphere glowing round its limb.
 
 import * as THREE from 'three/webgpu';
-import { abs, cameraPosition, clamp, dot, float, floor, fract, hash, length, max, mix, normalize, positionWorld, pow, smoothstep, texture, uniform, uv, vec2, vec3 } from 'three/tsl';
+import { cameraPosition, clamp, dot, float, floor, fract, hash, length, max, mix, mx_noise_float, normalize, positionWorld, pow, select, smoothstep, texture, uniform, uv, vec2, vec3 } from 'three/tsl';
 
 /** The Earth's radius (m, scaled), and how far under the station its top is. */
 export const EARTH_RADIUS = 5000;
@@ -63,13 +63,19 @@ export class SpaceSky {
     const view = normalize(cameraPosition.sub(positionWorld));
     const light = dot(n, this.sunUniform);
     const lit = smoothstep(-0.08, 0.25, light);
-    const ground = texture(day, uv()).rgb;
-    const cloud = texture(clouds, uv().add(vec2(this.clock.mul(0.0015), 0))).r;
-    const surface = mix(ground.mul(1.2), vec3(0.95, 0.96, 1), clamp(cloud.sub(0.15).mul(0.95), 0, 1));
+    // The maps give a texel some 8 m (the land) and 15 m (the clouds) across, a degree or so
+    // of view straight down: noise finer than that breaks up the cloud edges and grains the
+    // land and sea, faded out towards the horizon where the texels are fine already
+    const near = smoothstep(2200, 600, length(positionWorld.sub(cameraPosition)));
+    const fine = mx_noise_float(positionWorld.mul(0.035)).mul(0.6).add(mx_noise_float(positionWorld.mul(0.12)).mul(0.3)).mul(near);
+    const ground = texture(day, uv()).rgb.mul(fine.mul(0.12).add(1));
+    const cover = texture(clouds, uv().add(vec2(this.clock.mul(0.0015), 0))).r;
+    const cloud = smoothstep(0.18, 0.85, cover.add(fine.mul(0.35).mul(cover.mul(float(1).sub(cover)).mul(4))));
+    const surface = mix(ground.mul(1.2), vec3(0.95, 0.96, 1), cloud.mul(0.95));
     const rim = pow(float(1).sub(clamp(dot(n, view), 0, 1)), 3);
     const haze = vec3(0.35, 0.6, 1).mul(rim.mul(0.9).add(0.08));
     // Day: the surface and its haze; night: nearly black, a faint blue at the rim
-    const dayColour = surface.mul(light.max(0).mul(0.85).add(0.15)).mul(1.4).add(haze.mul(0.6));
+    const dayColour = surface.mul(light.max(0).mul(0.85).add(0.15)).mul(1.4).add(haze.mul(0.25));
     const nightColour = vec3(0.004, 0.006, 0.012).add(vec3(0.02, 0.04, 0.09).mul(rim));
     earthMat.colorNode = mix(nightColour, dayColour, lit) as unknown as THREE.Node<'color'>;
     const earth = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS, 192, 96), earthMat);
@@ -79,15 +85,28 @@ export class SpaceSky {
     earth.rotateY(-0.5);
     earth.renderOrder = -1;
 
-    // The atmosphere: a shell a little bigger, drawn from inside so it shows only round the limb
-    const airMat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
-    const an = normalize(positionWorld.sub(vec3(earthCentre.x, earthCentre.y, earthCentre.z)));
-    const edge = pow(float(1).sub(abs(dot(an, view))), 5);
-    const sunlit = clamp(dot(an, this.sunUniform).mul(1.5).add(0.35), 0, 1);
-    airMat.colorNode = vec3(0.3, 0.55, 1).mul(edge.mul(sunlit).mul(1.6)) as unknown as THREE.Node<'color'>;
-    const air = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS * 1.025, 128, 64), airMat);
+    // The atmosphere: a shell round the Earth, its glow worked out along each view ray from how
+    // near the ray passes the Earth's middle. Past the limb it fades smoothly to nothing at the
+    // top of the air; over the planet it's a haze thickening towards the limb, meeting the
+    // glow there. Brighter where the sun is on it.
+    const top = EARTH_RADIUS * 1.04;
+    const airMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+    const c = vec3(earthCentre.x, earthCentre.y, earthCentre.z);
+    const ray = normalize(positionWorld.sub(cameraPosition));
+    const toCentre = c.sub(cameraPosition);
+    const along = dot(toCentre, ray);
+    const nearest = cameraPosition.add(ray.mul(along));
+    const miss = length(nearest.sub(c));
+    const outside = clamp(miss.sub(EARTH_RADIUS).div(top - EARTH_RADIUS), 0, 1);
+    const glow = pow(float(1).sub(outside), 2.2);
+    const inside = clamp(float(EARTH_RADIUS).sub(miss).div(EARTH_RADIUS * 0.22), 0, 1);
+    const veil = pow(float(1).sub(inside), 4).mul(0.55);
+    const thick = select(miss.greaterThan(EARTH_RADIUS), glow, veil);
+    const sunlit = clamp(dot(normalize(nearest.sub(c)), this.sunUniform).mul(1.4).add(0.3), 0, 1);
+    airMat.colorNode = vec3(0.28, 0.52, 1).mul(thick.mul(sunlit).mul(0.9)) as unknown as THREE.Node<'color'>;
+    const air = new THREE.Mesh(new THREE.SphereGeometry(top, 160, 80), airMat);
     air.position.copy(earthCentre);
-    air.renderOrder = -1;
+    air.renderOrder = 0;
 
     this.object.add(this.stars, earth, air);
     this.sunUniform.value.copy(this.sun);
