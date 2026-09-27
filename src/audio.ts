@@ -41,7 +41,7 @@ export class Sounds {
     }
     void this.ctx.resume();
     this.master!.gain.value = this.suit!.gain.value = this.volume;
-    this.suitFilter!.frequency.value = this.muffled ? 1200 : this.ctx.sampleRate / 2;
+    this.suitFilter!.frequency.value = this.muffled ? 500 : this.ctx.sampleRate / 2;
     this.muffle!.frequency.value = this.muffled ? 380 : this.ctx.sampleRate / 2;
     this.body!.gain.value = this.muffled ? 4 : 0;
   }
@@ -61,8 +61,8 @@ export class Sounds {
   }
 
   /**
-   * The suit's jets (`strength` 0..1; call each frame they fire): a steady, low rush of gas while they do, swelling
-   * with the push, brighter the harder. Unless called again it dies away by itself (so it stops with the frames).
+   * The suit's jets (`strength` 0..1; call each frame they fire): a soft, low rush of gas while they do, swelling
+   * a little with the push. Unless called again it dies away by itself (so it stops with the frames).
    */
   jet(strength: number): void {
     const { ctx } = this;
@@ -84,9 +84,9 @@ export class Sounds {
     const t = ctx.currentTime;
     const { band, gain } = this.jets;
     gain.gain.cancelScheduledValues(t);
-    gain.gain.setTargetAtTime(0.1 + 0.15 * strength, t, 0.05);
+    gain.gain.setTargetAtTime(0.04 + 0.06 * strength, t, 0.05);
     gain.gain.setTargetAtTime(0, t + 0.08, 0.12);
-    band.frequency.setTargetAtTime(420 + 260 * strength, t, 0.1);
+    band.frequency.setTargetAtTime(220 + 100 * strength, t, 0.1);
   }
 
   /** Noise through a low-pass falling from `from` to `to` Hz over `seconds`, at `gain`. */
