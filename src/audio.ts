@@ -11,6 +11,8 @@ export class Sounds {
   /** Your own suit's sounds, beside the master (its own volume), muffled less: heard through the suit, not the hull. */
   private suit: GainNode | null = null;
   private suitFilter: BiquadFilterNode | null = null;
+  /** The tyres' screech: a squeal and a hiss, their level set each frame they slide. */
+  private screech: { squeal: OscillatorNode; gain: GainNode } | null = null;
   /** The jets' rush: one looping noise, its level and band set each frame they fire. */
   private jets: { band: BiquadFilterNode; gain: GainNode } | null = null;
   private noise: AudioBuffer | null = null;
@@ -58,6 +60,53 @@ export class Sounds {
     this.volume = v;
     if (this.master) this.master.gain.value = v;
     if (this.suit) this.suit.gain.value = v;
+  }
+
+  /**
+   * Tyres screeching (`amount` 0..1; call each frame they slide): a wavering squeal over the rubber's hiss,
+   * higher and louder the harder they slide. Unless called again it dies away by itself.
+   */
+  skid(amount: number): void {
+    const { ctx } = this;
+    if (!ctx || !this.master || !this.noise) return;
+    if (!this.screech) {
+      // The squeal: a sawtooth whose pitch wavers, through a narrow band; the hiss: noise through a wide one
+      const squeal = ctx.createOscillator();
+      squeal.type = 'sawtooth';
+      const waver = ctx.createOscillator();
+      waver.frequency.value = 7;
+      const depth = ctx.createGain();
+      depth.gain.value = 45;
+      waver.connect(depth).connect(squeal.frequency);
+      const band = ctx.createBiquadFilter();
+      band.type = 'bandpass';
+      band.frequency.value = 1100;
+      band.Q.value = 6;
+      const rubber = ctx.createBufferSource();
+      rubber.buffer = this.noise;
+      rubber.loop = true;
+      const wide = ctx.createBiquadFilter();
+      wide.type = 'bandpass';
+      wide.frequency.value = 2200;
+      wide.Q.value = 0.8;
+      const hiss = ctx.createGain();
+      hiss.gain.value = 0.6;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      squeal.connect(band).connect(gain);
+      rubber.connect(wide).connect(hiss).connect(gain);
+      gain.connect(this.master);
+      squeal.start();
+      waver.start();
+      rubber.start();
+      this.screech = { squeal, gain };
+    }
+    const t = ctx.currentTime;
+    const { squeal, gain } = this.screech;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setTargetAtTime(0.05 + 0.1 * amount, t, 0.04);
+    gain.gain.setTargetAtTime(0, t + 0.06, 0.08);
+    squeal.frequency.setTargetAtTime(820 + 260 * amount, t, 0.1);
   }
 
   /**

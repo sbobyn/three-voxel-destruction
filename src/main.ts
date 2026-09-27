@@ -24,7 +24,9 @@ import { buildCity, type City, emptyCity, isGlass, Mat, raycast, VOXEL, voxelAt 
 import { buildTrack, gridSlot, KERB, RUNOFF, TRACK_WIDTH, trackField, type TrackLine } from './track.ts';
 import { CAR_MASS, CAR_SIZE, CLEARANCE, Car, type Drive, sweep } from './car.ts';
 import { chooseProfile, type DeviceProfile, deviceKey, forgetProfile, measureFrames, measurePhysics, type Quality, saveProfile, savedProfile } from './calibrate.ts';
+import { Flames } from './flames.ts';
 import { SuitJets } from './jets.ts';
+import { SkidMarks } from './skids.ts';
 import type { Satellites } from './satellites.ts';
 import { Loader } from './loader.ts';
 
@@ -59,9 +61,10 @@ interface Effects {
   impact(at: ArrayLike<number>, speed: number, tint: THREE.Color): void;
   sparks(at: ArrayLike<number>, count: number, speed: number): void;
   exhaust(at: ArrayLike<number>, amount: number): void;
+  tyreSmoke(at: ArrayLike<number>, amount: number): void;
   update(dt: number, camera: THREE.Camera): void;
 }
-const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, update() {} };
+const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, tyreSmoke() {}, update() {} };
 
 /** Which world: the city block (the default), the race track (?scene=track) or the space station (?scene=space). */
 const SCENE: 'city' | 'track' | 'space' = (['track', 'space'] as const).find((s) => s === new URLSearchParams(location.search).get('scene')) ?? 'city';
@@ -572,7 +575,9 @@ async function start(): Promise<void> {
   spawn();
   if (SCENE === 'track' && line) {
     car = new Car();
-    view.scene.add(car.object);
+    flames = new Flames(car.exhausts().at.length);
+    skids = new SkidMarks(2);
+    view.scene.add(car.object, flames.object, skids.object);
     placeCar();
     setDriving(true);
   }
@@ -680,6 +685,7 @@ async function rebuild(): Promise<void> {
   chips.clear();
   shards.clear();
   smoke?.clear();
+  skids?.clear();
   dustiness = 0;
   physics.destroy();
   city = buildWorld();
@@ -896,29 +902,49 @@ function jets(dt: number, steering: boolean): void {
   suitJets?.update(dt, eye, player.velocity, vents, amounts, away);
 }
 
-/** The afterfire at a gear change, and the exhaust's smoke (grey puffs, more under throttle). */
+/** The race car's afterfire (flames.ts) and the marks its tyres leave (skids.ts). */
+let flames: Flames | null = null;
+let skids: SkidMarks | null = null;
+
+/** The afterfire at a gear change, and the exhaust's wisps (from each pipe in turn, more under throttle). */
 let upshifts = 0;
 let smokeDue = 0;
 function exhaust(dt: number, throttle: number): void {
   const c = car!;
   const { at, back } = c.exhausts();
   if (c.shifts !== upshifts) {
+    // The afterfire: a flame out of every pipe, a few sparks, a pop, a flare of the bloom and a kick of the camera
     upshifts = c.shifts;
-    for (const p of at) {
-      effects.sparks(p.toArray(), 5, 3.5);
-      impacts.hit(p.toArray(), back.toArray(), 0.3, 0.09, hotRing, 0.4);
-    }
-    for (const p of at) effects.exhaust(p.toArray(), 1);
+    flames?.fire();
+    for (const p of at) effects.sparks(p.toArray(), 2, 3.5);
     sounds.pop(driving ? 4 : eye.distanceTo(c.position));
     view.glow = Math.max(0.6, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value);
     chase.kick = 1;
   }
-  // Under throttle only (clear at idle), thinning out at speed where it's left behind at once
+  flames?.update(dt, at, back);
+  // Under throttle only (clear at idle), a pipe at a time, thinning out at speed where it's left behind at once
   smokeDue -= dt * throttle * (Math.abs(c.speed) < 45 ? 1 : 0.4);
   if (smokeDue <= 0) {
-    smokeDue = 0.1;
-    effects.exhaust(at[Math.random() < 0.5 ? 0 : 1].toArray(), throttle * 0.6);
+    smokeDue = 0.07;
+    effects.exhaust(at[Math.floor(Math.random() * at.length)].toArray(), throttle * 0.5);
   }
+}
+
+/**
+ * The rear tyres sliding (drifting, or locked by the handbrake): black marks laid on the track, white smoke
+ * rolling out from under them, and their screech; the harder they slide, the more of each.
+ */
+let tyreSmokeDue = 0;
+function tyres(dt: number): void {
+  const c = car!;
+  const at = c.rearTyres();
+  skids?.update(at, c.skid, simTime);
+  if (c.skid < 0.05) return;
+  sounds.skid(c.skid);
+  tyreSmokeDue -= dt * (0.4 + c.skid);
+  if (tyreSmokeDue > 0) return;
+  tyreSmokeDue = 0.05;
+  for (const p of at) effects.tyreSmoke(p.toArray(), c.skid);
 }
 
 /** The chase camera behind the car: its eye and the way it looks (into `eye`, `dir`). */
@@ -973,6 +999,7 @@ function startEffects(): Effects {
     impact: (at, speed, tint) => particles.impact(at, speed, tint),
     sparks: (at, count, speed) => particles.sparks(at, count, speed),
     exhaust: (at, amount) => particles.exhaust(at, amount),
+    tyreSmoke: (at, amount) => particles.tyreSmoke(at, amount),
     update: (dt, camera) => {
       if (sky) {
         sun.copy(sky.sunColor).multiplyScalar(0.45 * sky.sunIntensity());
@@ -1946,7 +1973,10 @@ function tick(now: number): void {
   view.glow = Math.max(0.35, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value - dt * 1.5);
   const aim = raycast(city, eye.toArray(), dir.toArray(), driving ? CAR_ROCKET.reach : TOOLS[tool].reach || 3);
   if (driving && car) hud.speed(car.speed * 3.6, boostLeft, car.gear, loaded.map((t) => Math.max(0, Math.min(1, 1 - (t - simTime) / RELOAD))));
-  if (car) exhaust(sim, driving && playing ? Math.max(0, driveInput().throttle) : 0);
+  if (car) {
+    exhaust(sim, driving && playing ? Math.max(0, driveInput().throttle) : 0);
+    tyres(sim);
+  }
   // Walking up to the car: say how to get in
   const near = !!car && !driving && player.position.distanceTo(car.position) < GET_IN;
   if (near && !byCar) hud.toast(touch ? 'Tap the fly button to get in' : 'F to get in');

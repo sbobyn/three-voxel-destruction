@@ -85,7 +85,7 @@ export type ParticleQuality = 'low' | 'medium' | 'high';
 const Kind = { Fire: 0, Smoke: 1, Dust: 2, Spark: 3 } as const;
 
 /** How a burst's particles are placed and launched (the spawn kernel). */
-const Burst = { Fireball: 0, Smoke: 1, DustRing: 2, Crumble: 3, Impact: 4, Smoulder: 5, Flame: 6, Sparks: 7, Exhaust: 8, Trail: 9 } as const;
+const Burst = { Fireball: 0, Smoke: 1, DustRing: 2, Crumble: 3, Impact: 4, Smoulder: 5, Flame: 6, Sparks: 7, Exhaust: 8, Trail: 9, Tyre: 10 } as const;
 
 /** Each burst type's lifetime range (s) before its life scale; the live count mirrors it. */
 const LIFE: [number, number][] = [
@@ -99,6 +99,7 @@ const LIFE: [number, number][] = [
   [1.2, 3], // sparks
   [0.7, 1.4], // exhaust wisps
   [0.5, 1.3], // a debris trailer's wake
+  [1.4, 2.8], // tyre smoke
 ];
 
 /**
@@ -499,6 +500,15 @@ export class Particles {
     this.queue([Burst.Exhaust, 0.1 + amount * 0.12, 1, 1, 0.86, 0.86, 0.88, 0.3 + amount * 0.15, at[0], at[1], at[2], this.quality.size], [at[0], at[1], at[2]], n);
   }
 
+  /**
+   * Tyre smoke where a sliding tyre meets the road (`amount` 0..1): white puffs rolling out low, lingering. (Tinted
+   * cool: a warm low sun turned it the colour of dust.)
+   */
+  tyreSmoke(at: ArrayLike<number>, amount: number): void {
+    const n = Math.max(1, Math.round((1 + 2 * amount) * this.quality.count));
+    this.queue([Burst.Tyre, 0.25 + 0.25 * amount, 1, 1, 0.78, 0.85, 1, 0.16 + 0.24 * amount, at[0], at[1], at[2], this.quality.size], [at[0], at[1], at[2]], n);
+  }
+
   /** Lingering smoke source (e.g. burning spot) for `seconds`. */
   smoulder(at: ArrayLike<number>, seconds: number): void {
     const p = new THREE.Vector3(at[0], at[1], at[2]);
@@ -823,6 +833,14 @@ export class Particles {
           }).Else(() => {
             growth.assign(size.mul(1.4));
           });
+        })
+        .ElseIf(type.equal(Burst.Tyre), () => {
+          // Tyre smoke: out from under the tyre, low and rolling, swelling as it spreads (smoke, not dust: soft
+          // light through it, not a lit lump)
+          pos.assign(origin.add(ball.mul(0.25)).add(vec3(0, 0, 0.15)));
+          vel.assign(ball.mul(1.2).add(vec3(0, 0, rnd(3).mul(0.4).add(0.3))));
+          radius.assign(size.mul(rnd(5).mul(0.4).add(0.6)));
+          growth.assign(size.mul(1.6));
         })
         .ElseIf(type.equal(Burst.Smoulder), () => {
           pos.assign(origin.add(ball.mul(0.5)));

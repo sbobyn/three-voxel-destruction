@@ -38,6 +38,8 @@ const WHEEL_R = 0.34;
 const FRONT_AXLE = 1.42;
 const REAR_AXLE = -1.3;
 const TRACK = 0.84;
+/** The exhausts' middles (m: across, up), two either side under the tail lights. */
+const PIPES = [-0.59375, -0.40625, 0.40625, 0.59375].map((y) => [y, 0.40625]);
 const WHEEL_W = 0.3;
 
 /** A cell's look; a lamp's glow switched by the brakes or reversing (else always on). */
@@ -163,10 +165,11 @@ function shape(x: number, y: number, z: number): Finish | null {
   if (ay > hw - 0.07 && x > -0.8 && x < -0.3 && z > 0.3 && z < 0.6) return BLACK; // side intakes
   if (ay > hw - 0.05 && z > 0.36 && z < 0.44 && x > -0.3 && x < 1.1) return SHADOW; // a crease along the door
   // The tail: the diffuser under it, a dark band with a row of short light bars (two cells tall)
-  // across each side and a white reversing light standing at its outer end, the exhausts high in
-  // the middle
+  // across each side and a white reversing light standing at its outer end; between them a black
+  // valance the four exhausts stand out of (bodyCells adds those)
   if (x < -2.2) {
     if (z < 0.34) return ay < 0.75 && Math.floor(ay / 0.19) % 2 === 1 && z < 0.3 ? SHADOW : BLACK;
+    if (z < 0.5 && ay > 0.3 && ay < 0.72) return BLACK;
     const band = z > 0.5 && z < 0.7 && ay > 0.28 && ay < 0.9;
     if (band) {
       if (ay > 0.82) return REVERSE;
@@ -175,7 +178,6 @@ function shape(x: number, y: number, z: number): Finish | null {
       return row && bar ? TAIL : BLACK;
     }
   }
-  if (x < -2.05 && ay < 0.26 && z > top - 0.16 && z < top - 0.02) return ay < 0.06 ? BLACK : PIPE;
   if (x < -2.24 && z > top - 0.04) return BLACK; // the ducktail's lip
   return PAINT;
 }
@@ -192,6 +194,11 @@ function bodyCells(): Map<string, Finish> {
         const f = shape(-HALF_L + (i + 0.5) * CELL, -HALF_W + (j + 0.5) * CELL, (k + 0.5) * CELL);
         if (f) cells.set(`${i},${j},${k}`, f);
       }
+  // Four exhausts, two a side, standing out of the tail: a steel ring round a black bore, three cells across
+  for (const [j, k] of PIPES.map(([y, z]) => [Math.round((y + HALF_W) / CELL - 0.5), Math.round(z / CELL - 0.5)]))
+    for (let dj = -1; dj <= 1; dj++)
+      for (let dk = -1; dk <= 1; dk++)
+        for (const i of [-2, -1]) cells.set(`${i},${j + dj},${k + dk}`, i === -2 && dj === 0 && dk === 0 ? BLACK : PIPE);
   // Mirrors on stalks by the windscreen, just outside the body
   const i0 = Math.round((0.72 + HALF_L) / CELL);
   const k0 = Math.round(0.74 / CELL);
@@ -316,6 +323,8 @@ function armCells(n: number): Map<string, Finish> {
 const ARM = 8;
 
 /** Top gear speeds (km/h) of each of the seven gears (the first from rest). */
+/** The tyres' grip across (m/s²): how hard it can corner before it runs wide. */
+const GRIP = 11;
 /**
  * The tail and reversing lights' glow: off (the tail lights' dim running glow) and on. (Brighter tail lights than
  * this only turn orange through the tone mapping: they look brighter against a dimmer running glow instead.)
@@ -327,7 +336,7 @@ interface Lights {
   reverse: THREE.UniformNode<'float', number>;
 }
 
-const GEARS = [0, 62, 104, 146, 188, 232, 276, 360];
+const GEARS = [0, 55, 90, 125, 160, 195, 230, 300];
 /** Seconds of lost drive at an upshift. */
 const SHIFT = 0.16;
 
@@ -344,6 +353,8 @@ export class Car {
   roll = 0;
   /** Sliding sideways (m/s): screeching tyres. */
   slip = 0;
+  /** How hard the rear tyres are skidding (0..1): sliding sideways, or locked by the handbrake. */
+  skid = 0;
   /** The gear (1-7), the revs in it (0 idle to 1 the limiter), and upshifts so far (a new one: an afterfire). */
   gear = 1;
   revs = 0;
@@ -462,29 +473,35 @@ export class Car {
     const low = GEARS[this.gear - 1];
     const within = Math.min(1, (kmh - low) / (GEARS[this.gear] - low));
     this.revs = 0.25 + 0.75 * (this.gear === 1 ? within : 0.35 + within * 0.65);
-    // Engine and brakes: strong off the line, fading towards top speed; braking, then reverse
-    const top = d.boost ? 95 : 78;
+    // Engine and brakes: strong off the line, fading towards top speed (about 210 km/h, 250 boosting: a
+    // circuit's pace); braking, then reverse
+    const top = d.boost ? 70 : 58;
     this.braking = (d.throttle < 0 && along > 0.5) || (d.handbrake && Math.abs(along) > 0.5);
     this.reversing = d.throttle < 0 && along <= 0.5;
     if (d.throttle > 0) {
       const cut = this.shifting > 0 ? 0.25 : 1;
-      const push = along < 0 ? 30 : 17 * Math.max(0, 1 - (along / top) ** 2) * (d.boost ? 1.5 : 1) * cut;
+      const push = along < 0 ? 30 : 12 * Math.max(0, 1 - (along / top) ** 2) * (d.boost ? 1.4 : 1) * cut;
       along += push * d.throttle * dt;
     } else if (d.throttle < 0) {
-      if (along > 0.5) along = Math.max(0, along + 32 * d.throttle * dt);
+      if (along > 0.5) along = Math.max(0, along + 26 * d.throttle * dt);
       else along = Math.max(-16, along + 9 * d.throttle * dt);
     }
     // Rolling and air: coasting slows it
     along -= Math.sign(along) * Math.min(Math.abs(along), (0.9 + 0.00045 * along * along) * dt);
     if (d.handbrake) along -= Math.sign(along) * Math.min(Math.abs(along), 7 * dt);
-    // Steering: quick at low speed, gentle at speed
-    const most = 0.62 / (1 + Math.abs(along) / 20);
+    // Steering: the lock falls away with speed; the wheel winds on steadily and comes back to the middle
+    // quicker (a weighted rack, not a switch)
+    const most = 0.55 / (1 + Math.abs(along) / 14);
     const want = d.steer * most;
-    this.steer += Math.max(-3.5 * dt, Math.min(3.5 * dt, want - this.steer));
-    // Yaw from the steering (a bicycle, 2.7 m between the axles); the handbrake lets the back step out
+    const rate = (Math.abs(want) < Math.abs(this.steer) || want * this.steer < 0 ? 3.2 : 1.9) * dt;
+    this.steer += Math.max(-rate, Math.min(rate, want - this.steer));
+    // Yaw from the steering (a bicycle, 2.7 m between the axles), up to what the tyres can hold (about 1.1 g
+    // across: turn harder at speed and it runs wide, not round); the car's weight takes a moment to turn, and
+    // the handbrake lets the back step out
     const wheelbase = FRONT_AXLE - REAR_AXLE;
-    const target = (along / wheelbase) * Math.tan(this.steer) * (d.handbrake ? 1.45 : 1);
-    this.yawRate += (target - this.yawRate) * Math.min(1, dt * (d.handbrake ? 3 : 9));
+    const grip = GRIP / Math.max(Math.abs(along), 1);
+    const target = Math.max(-grip, Math.min(grip, (along / wheelbase) * Math.tan(this.steer))) * (d.handbrake ? 1.45 : 1);
+    this.yawRate += (target - this.yawRate) * Math.min(1, dt * (d.handbrake ? 3 : 5.5));
     this.heading += this.yawRate * dt;
     // The velocity keeps its way as the car turns under it: what's now sideways to the new
     // heading is sliding, and the grip takes that away (fast; slowly under the handbrake: a drift)
@@ -494,6 +511,7 @@ export class Car {
     const on = this.velocity.dot(nf);
     const slide = this.velocity.dot(ns) * Math.exp(-dt * (d.handbrake ? 1.6 : 11));
     this.slip = Math.abs(slide);
+    this.skid = Math.max(Math.min(1, Math.max(0, (this.slip - 1.5) / 5)), d.handbrake ? Math.min(1, Math.abs(on) / 12) : 0);
     this.velocity.copy(nf.multiplyScalar(on)).add(ns.multiplyScalar(slide));
     this.position.x += this.velocity.x * dt;
     this.position.y += this.velocity.y * dt;
@@ -552,10 +570,16 @@ export class Car {
     };
   }
 
+  /** Where the rear tyres touch the ground (world, m). */
+  rearTyres(): THREE.Vector3[] {
+    this.object.updateMatrixWorld(true);
+    return [1, -1].map((s) => this.object.localToWorld(new THREE.Vector3(REAR_AXLE, s * TRACK, 0)));
+  }
+
   /** Where the exhausts are (world, m), and the way out of them (backwards). */
   exhausts(): { at: THREE.Vector3[]; back: THREE.Vector3 } {
     this.object.updateMatrixWorld(true);
-    const at = [-1, 1].map((s) => this.body.localToWorld(new THREE.Vector3(-HALF_L - 0.02, s * 0.14, 0.8)));
+    const at = PIPES.map(([y, z]) => this.body.localToWorld(new THREE.Vector3(-HALF_L - 2 * CELL, y, z)));
     const f = this.forward;
     return { at, back: new THREE.Vector3(-f.x, -f.y, 0.15).normalize() };
   }
