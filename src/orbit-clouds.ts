@@ -7,7 +7,7 @@
 // the station, composited as the layer's premultiplied radiance plus the background times its transmittance.
 
 import * as THREE from 'three/webgpu';
-import { mx_noise_float, smoothstep, uniform } from 'three/tsl';
+import { acos, atan, dot, float, log, max, mx_noise_float, normalize, sin, smoothstep, uniform, vec3 } from 'three/tsl';
 import { createCloudLayer } from './clouds/layer.ts';
 import { PERIODS } from './clouds/model.ts';
 import { BASE_SIZE, DETAIL_SIZE } from './clouds/noise.ts';
@@ -22,7 +22,13 @@ import { generateNoise, makeVolumeTexture } from './clouds/noise-gpu.ts';
  */
 const EARTH_KM = 900;
 /** The cloud noise, coarser than the layer's own: bigger clouds. */
-const NOISE_SCALE = 0.55;
+const NOISE_SCALE = 0.4;
+/**
+ * Cyclones: where their eyes are on the Earth (directions from its middle, Earth-fixed, as it's turned at the start),
+ * and how far their bands reach (km). The first is ahead of the station, coming towards it as the Earth turns.
+ */
+const CYCLONES = [new THREE.Vector3(0.05, Math.sin(0.3), Math.cos(0.3)), new THREE.Vector3(-0.2, Math.sin(2.4), Math.cos(2.4)), new THREE.Vector3(0.25, Math.sin(4.3), Math.cos(4.3))];
+const CYCLONE = 280;
 
 export class OrbitClouds {
   /** The quad the clouds are drawn on (the camera's child: add it to the camera). */
@@ -42,19 +48,42 @@ export class OrbitClouds {
     this.km = EARTH_KM / radius;
     this.base = makeVolumeTexture(new Uint8Array(4 * BASE_SIZE ** 3), BASE_SIZE);
     this.detail = makeVolumeTexture(new Uint8Array(4 * DETAIL_SIZE ** 3), DETAIL_SIZE);
-    // Regional cover from broad noise over the globe: systems a hundred or two kilometres across with clear sea
-    // between them. And the weather within them from noise too (the layer's own weather field repeats every 120 km,
-    // which would tile the view): cells of 15 to 40 km, heaping and thinning the cover
+    // Where the clouds are, on the Earth itself (the offsets turned into Earth-fixed kilometres: the clouds turn with
+    // it): broad systems some 300 km across, solid, and nothing between them (thin cover made scatters of tiny
+    // puffs); and cyclones, spirals of cloud bands wound into a dense eyewall round a clear eye. The weather within
+    // (the layer's own weather field repeats every 120 km, which would tile the view) only heaps and thins a little.
     const world = (offset: THREE.Node<'vec3'>) => this.weatherOrigin.add(this.weatherFrame.mul(offset));
+    const cyclone = (w: THREE.Node<'vec3'>, at: THREE.Vector3) => {
+      const c = at.clone().normalize();
+      const t1 = new THREE.Vector3(0, 0, 1).cross(c).normalize();
+      const t2 = c.clone().cross(t1);
+      const p = normalize(w);
+      const r = acos(dot(p, vec3(c.x, c.y, c.z)).clamp(-1, 1)).mul(EARTH_KM);
+      const around = atan(dot(p, vec3(t2.x, t2.y, t2.z)), dot(p, vec3(t1.x, t1.y, t1.z)));
+      // A hurricane: a dense central disc round a small clear eye, and bands spiralling out of it (two arms,
+      // logarithmic spirals), thinning towards the edge
+      const bands = smoothstep(0.3, 0.85, sin(around.mul(2).add(log(r.add(4)).mul(7)))).mul(smoothstep(CYCLONE, CYCLONE * 0.3, r));
+      const disc = smoothstep(80, 45, r);
+      const eye = smoothstep(7, 14, r);
+      // And the clear air round it (a hurricane sweeps its surroundings clear: its spiral stands out on open sea)
+      return { cover: max(bands, disc).mul(eye), zone: smoothstep(CYCLONE * 1.35, CYCLONE, r) };
+    };
     const coverage = (offset: THREE.Node<'vec3'>) => {
       const w = world(offset);
-      // Few, broad systems: most of the globe clear, the rest well covered
-      const n = mx_noise_float(w.mul(1 / 320)).mul(0.75).add(mx_noise_float(w.mul(1 / 110)).mul(0.25));
-      return smoothstep(-0.15, 0.3, n).mul(0.75).add(0.02);
+      const n = mx_noise_float(w.mul(1 / 330)).mul(0.75).add(mx_noise_float(w.mul(1 / 120)).mul(0.25));
+      let storms = cyclone(w, CYCLONES[0]).cover;
+      let zone = cyclone(w, CYCLONES[0]).zone;
+      for (const c of CYCLONES.slice(1)) {
+        const one = cyclone(w, c);
+        storms = max(storms, one.cover);
+        zone = max(zone, one.zone);
+      }
+      const systems = smoothstep(0.08, 0.3, n).mul(0.8).mul(float(1).sub(zone));
+      return max(systems, storms.mul(0.9));
     };
     const weather = (offset: THREE.Node<'vec3'>) => {
       const w = world(offset);
-      return mx_noise_float(w.mul(1 / 70)).mul(0.35).add(mx_noise_float(w.mul(1 / 25)).mul(0.2)).add(0.5);
+      return mx_noise_float(w.mul(1 / 80)).mul(0.2).add(0.5);
     };
     this.layer = createCloudLayer({ base: this.base, detail: this.detail, worldFrame: true, coverage, weather });
     const u = this.layer.uniforms;
@@ -62,7 +91,9 @@ export class OrbitClouds {
     // A deep layer, dense: towering heaps, not a thin deck
     u.bottom.value = 1.5;
     u.top.value = 7;
-    u.density.value = 28;
+    u.density.value = 30;
+    // (Less of the fine erosion: whole heaps, not frayed scatters)
+    u.erosion.value = 0.24;
     // The planet adapter's display settings, at its orbit quality
     u.early.value = 1;
     u.skip.value = 1;
@@ -101,7 +132,7 @@ export class OrbitClouds {
   }
 
   /** Each frame: the march's camera, sun and noise frame from the scene's camera and sun (world, unit), lit by `sunColour`. */
-  update(camera: THREE.PerspectiveCamera, sun: THREE.Vector3, sunColour: THREE.Color, brightness: number): void {
+  update(camera: THREE.PerspectiveCamera, sun: THREE.Vector3, sunColour: THREE.Color, brightness: number, spin: THREE.Quaternion): void {
     const u = this.layer.uniforms;
     camera.updateMatrixWorld();
     const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
@@ -126,15 +157,19 @@ export class OrbitClouds {
     u.sun.value.copy(sun).applyMatrix3(toLocal).normalize();
     u.sunColour.value.set(sunColour.r, sunColour.g, sunColour.b).multiplyScalar(brightness);
     u.ambient.value.set(0.16, 0.2, 0.27).multiplyScalar(brightness * 0.6);
-    u.noiseFrame.value.copy(frame).multiplyScalar(NOISE_SCALE);
+    // The noise is fixed to the Earth, which turns by `spin`: the local frame and the camera's place in Earth-fixed axes
+    const unspin = new THREE.Matrix3().setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(spin.clone().invert()));
+    const fixedFrame = unspin.clone().multiply(frame);
+    const fixedRel = rel.clone().applyMatrix3(unspin);
+    u.noiseFrame.value.copy(fixedFrame).multiplyScalar(NOISE_SCALE);
     // The noise origins: where the camera is from the Earth's middle (km, scaled as the noise), wrapped to each field's period
-    const origin = rel.clone().multiplyScalar(this.km * NOISE_SCALE);
+    const origin = fixedRel.clone().multiplyScalar(this.km * NOISE_SCALE);
     const wrap = (target: THREE.Vector3, period: number) => target.set(((origin.x % period) + period) % period, ((origin.y % period) + period) % period, ((origin.z % period) + period) % period);
     wrap(u.originWeather.value, PERIODS.weather);
     wrap(u.originBase.value, PERIODS.base);
     wrap(u.originDetail.value, PERIODS.detail);
-    this.weatherOrigin.value.copy(rel).multiplyScalar(this.km);
-    this.weatherFrame.value.copy(frame);
+    this.weatherOrigin.value.copy(fixedRel).multiplyScalar(this.km);
+    this.weatherFrame.value.copy(fixedFrame);
     // The quad fills the view just past the near plane
     const d = camera.near * 2;
     this.object.position.set(0, 0, -d);

@@ -7,7 +7,7 @@
 
 import * as THREE from 'three/webgpu';
 import { OrbitClouds } from './orbit-clouds.ts';
-import { cameraPosition, clamp, dot, float, floor, fract, hash, length, max, mix, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { cameraPosition, clamp, dot, fwidth, mx_noise_float, positionLocal, float, floor, fract, hash, length, max, mix, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /** The Earth's radius (m, scaled), and how far under the station its top is. */
 export const EARTH_RADIUS = 5000;
@@ -46,6 +46,37 @@ function bicubic(map: THREE.Texture, at: THREE.Node<'vec2'>, size: [number, numb
   return mix(mix(s3, s2, sx), mix(s1, s0, sx), sy) as unknown as THREE.Node<'vec4'>;
 }
 
+/**
+ * A lap of the orbit (s): the real station's takes 92 minutes; this one's quicker, so the ground slides by under
+ * it and the stars wheel. The axis it turns the Earth about: the ground moves towards -y.
+ */
+const ORBIT = 20 * 60;
+const ORBIT_AXIS = new THREE.Vector3(1, 0, 0);
+/** The cirrus's height above the Earth (scene units: about 11 km at the clouds' scale, over the cumulus's 7). */
+const CIRRUS_HEIGHT = 60;
+
+/**
+ * High cirrus: a thin shell over the cloud layer, streaks of ice drawn out along the winds, in patches, lit by the
+ * sun (dark on the night side), faded at the grazing edge where it would pile into a white band. Its noise is in
+ * its own (turning) frame, so it goes round with the Earth.
+ */
+function cirrusShell(centre: THREE.Vector3, sun: THREE.UniformNode<'vec3', THREE.Vector3>): THREE.Mesh {
+  const material = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, fog: false });
+  const p = positionLocal;
+  const streaks = mx_noise_float(p.mul(vec3(0.0035, 0.03, 0.03))).mul(0.6).add(mx_noise_float(p.mul(vec3(0.009, 0.08, 0.08))).mul(0.3)).add(mx_noise_float(p.mul(0.2)).mul(0.1));
+  const patches = smoothstep(0.1, 0.45, mx_noise_float(p.mul(0.0022)).add(mx_noise_float(p.mul(0.007)).mul(0.3)));
+  const n = normalize(positionWorld.sub(vec3(centre.x, centre.y, centre.z)));
+  const view = normalize(cameraPosition.sub(positionWorld));
+  const edge = smoothstep(0.02, 0.25, dot(n, view));
+  const lit = clamp(dot(n, sun).mul(1.2).add(0.1), 0, 1);
+  material.colorNode = vec3(1.0, 1.0, 1.02).mul(lit.mul(1.1).add(0.03)) as unknown as THREE.Node<'color'>;
+  material.opacityNode = smoothstep(0.05, 0.55, streaks).mul(patches).mul(edge).mul(0.5) as unknown as THREE.Node<'float'>;
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS + CIRRUS_HEIGHT, 160, 80), material);
+  mesh.position.copy(centre);
+  mesh.renderOrder = 1;
+  return mesh;
+}
+
 /** The clouds' sun and sky light, against the Earth's surface as the Earth shader lights it. */
 const CLOUD_LIGHT = 1.4;
 
@@ -61,6 +92,15 @@ export class SpaceSky {
   private readonly stars: THREE.Mesh;
   /** The clouds over the Earth (on a quad on the camera: main.ts adds it there and loads them). */
   readonly clouds: OrbitClouds;
+  /** The high, thin cirrus, a shell over the clouds. */
+  private readonly cirrus: THREE.Mesh;
+  private readonly earth!: THREE.Mesh;
+  private readonly earthRest!: THREE.Quaternion;
+  /** How far round the orbit has turned the Earth and the sky, and back again (for the stars). */
+  private readonly spin = new THREE.Quaternion();
+  private readonly unspin = uniform(new THREE.Matrix3());
+  /** The clock when the orbit started (the first update). */
+  private started = -1;
 
   /** `centre`: the point the Earth is under (the station's middle). */
   constructor(centre: THREE.Vector3) {
@@ -73,17 +113,25 @@ export class SpaceSky {
     // The sky: stars in three sizes, hashed from the direction, and the sun's disc with its glare
     const skyMat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide, depthWrite: false, fog: false });
     const dir = normalize(positionWorld.sub(cameraPosition));
+    // The stars stay put in the sky the station orbits through: in its frame they wheel round with the Earth
+    const fixedDir = this.unspin.mul(dir);
     let stars = float(0) as unknown as THREE.Node<'float'>;
+    // Each star at least about a pixel across (the pixel's size in cells, from the screen-space derivative), its
+    // brightness spread to keep its light the same: a star smaller than a pixel flickered on and off as the sky
+    // turned it across pixels. (The faintest, finest layer went: it was nearly all under a pixel.)
     for (const [scale, keep, bright] of [
       [180, 0.992, 0.9],
-      [420, 0.985, 0.55],
-      [900, 0.98, 0.35],
+      [420, 0.986, 0.5],
     ] as const) {
-      const p = dir.mul(scale);
+      const p = fixedDir.mul(scale);
       const cell = floor(p);
       const h = hash(cell.dot(vec3(1, 57, 113)));
       const spot = length(fract(p).sub(0.5));
-      stars = stars.add(smoothstep(0.16, 0.0, spot).mul(smoothstep(keep, 1.0, h)).mul(bright * 30)) as unknown as THREE.Node<'float'>;
+      const w = fwidth(p);
+      const pixel = max(w.x, max(w.y, w.z));
+      const radius = max(float(0.12), pixel.mul(1.1));
+      const spread = float(0.12).div(radius).pow(2);
+      stars = stars.add(smoothstep(radius, 0.0, spot).mul(smoothstep(keep, 1.0, h)).mul(spread).mul(bright * 30)) as unknown as THREE.Node<'float'>;
     }
     const toSun = max(dot(dir, this.sunUniform), 0);
     const disc = smoothstep(0.99985, 0.9999, toSun).mul(14).add(pow(toSun, 1500).mul(1.5)).add(pow(toSun, 120).mul(0.04));
@@ -121,6 +169,8 @@ export class SpaceSky {
     // West Africa underneath (the map's 10 degrees west), tipped a little north
     earth.rotation.set(-0.25, -1.4, 0, 'XYZ');
     earth.renderOrder = -1;
+    this.earth = earth;
+    this.earthRest = earth.quaternion.clone();
 
     // The atmosphere: a shell round the Earth, its glow worked out along each view ray from how
     // near the ray passes the Earth's middle. Past the limb it fades smoothly to nothing at the
@@ -146,7 +196,8 @@ export class SpaceSky {
     air.renderOrder = 0;
 
     this.clouds = new OrbitClouds(earthCentre, EARTH_RADIUS);
-    this.object.add(this.stars, earth, air);
+    this.cirrus = cirrusShell(earthCentre, this.sunUniform);
+    this.object.add(this.stars, earth, air, this.cirrus);
     this.sunUniform.value.copy(this.sun);
   }
 
@@ -160,7 +211,14 @@ export class SpaceSky {
     this.stars.position.copy(camera.position);
     this.sunUniform.value.copy(this.sun);
     this.clock.value = time;
-    if (this.clouds.ready) this.clouds.update(camera as THREE.PerspectiveCamera, this.sun, this.sunColor, CLOUD_LIGHT);
+    // The orbit: the Earth (and its clouds) and the stars turning together about the orbit's axis, a lap every
+    // ORBIT seconds. (The sun is kept where it is, as in a dawn-to-dusk orbit: the station never goes into the dark.)
+    if (this.started < 0) this.started = time;
+    this.spin.setFromAxisAngle(ORBIT_AXIS, ((time - this.started) / ORBIT) * Math.PI * 2);
+    this.earth.quaternion.copy(this.spin).multiply(this.earthRest);
+    this.cirrus.quaternion.copy(this.spin);
+    this.unspin.value.setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(this.spin.clone().invert()));
+    if (this.clouds.ready) this.clouds.update(camera as THREE.PerspectiveCamera, this.sun, this.sunColor, CLOUD_LIGHT, this.spin);
   }
 
   setQuality(_quality: string): void {}
