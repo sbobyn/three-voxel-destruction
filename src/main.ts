@@ -578,7 +578,7 @@ async function start(): Promise<void> {
     car = new Car();
     flames = new Flames(car.exhausts().at.length);
     skids = new SkidMarks(2);
-    view.scene.add(car.object, flames.object, skids.object);
+    view.scene.add(car.object, car.bits.object, flames.object, skids.object);
     placeCar();
     setDriving(true);
   }
@@ -735,7 +735,7 @@ function driveInput(): Drive {
     throttle: clamp(k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown') + stick.forward),
     steer: clamp(k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight') - stick.right),
     handbrake: keys.has('Space') || touch?.up === true,
-    boost: (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch?.sprint === true) && boostLeft > 0,
+    boost: (keys.has('KeyB') || touch?.sprint === true) && boostLeft > 0,
   };
 }
 
@@ -782,8 +782,8 @@ function crash(hits: number[]): boolean {
       sounds.hammer(2);
       shake = Math.max(shake, Math.min(0.8, v / 20));
     }
-    // Stopped dead: the harder it hit, the more it's hurt (a nudge at walking pace, none)
-    hurtCar(Math.max(0, v - 5) * STOP_DAMAGE, c.position);
+    // Stopped dead: the harder it hit, the more it's hurt (a nudge at walking pace, none), where it hit
+    hurtCar(Math.max(0, v - 5) * STOP_DAMAGE, struck(hits));
     return false;
   }
   const f = c.forward;
@@ -813,9 +813,16 @@ function crash(hits: number[]): boolean {
   sounds.wreck(3, Math.min(40, v));
   shake = Math.max(shake, Math.min(1.1, 0.25 + v / 45));
   c.velocity.multiplyScalar(kept);
-  // Through, but hurt by as much speed as what it hit took off it
-  hurtCar(v * (1 - kept) * THROUGH_DAMAGE, nose);
+  // Through, but hurt by as much speed as what it hit took off it, where it hit
+  hurtCar(v * (1 - kept) * THROUGH_DAMAGE, struck(hits));
   return true;
+}
+
+/** Where the car met what it ran into: the middle of the voxels it struck (world). */
+function struck(hits: number[]): THREE.Vector3 {
+  const at = new THREE.Vector3();
+  for (const h of hits) at.add(new THREE.Vector3(city.position[3 * h], city.position[3 * h + 1], city.position[3 * h + 2]));
+  return at.divideScalar(hits.length);
 }
 
 /** Damage (a share of a new car's health) a metre a second of speed lost stopping dead, and ploughing through. */
@@ -829,7 +836,7 @@ const THROUGH_DAMAGE = 0.02;
 function hurtCar(amount: number, at: THREE.Vector3): void {
   const c = car;
   if (!c || c.health <= 0 || amount < 0.01) return;
-  c.hurt(amount);
+  c.hurt(amount, at);
   effects.sparks(at.toArray(), Math.round(4 + amount * 40), 6);
   effects.impact(at.toArray(), 4 + amount * 30, paintFlakes);
   if (driving) hud.flash(Math.min(0.5, amount * 1.5));
@@ -2001,7 +2008,7 @@ function tick(now: number): void {
   cam.position.copy(eye).add(new THREE.Vector3(wander(1) * trauma * 0.09, wander(2) * trauma * 0.09, wander(3) * trauma * 0.09 - dip));
   const sprinting = playing && keys.has('ShiftLeft') && Math.hypot(player.velocity.x, player.velocity.y) > 6;
   const carSpeed = driving && car ? Math.abs(car.speed) : 0;
-  const fov = driving ? settings.fov + Math.min(16, carSpeed * 0.18) + (keys.has('ShiftLeft') && boostLeft > 0 ? 5 : 0) : aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
+  const fov = driving ? settings.fov + Math.min(16, carSpeed * 0.18) + (keys.has('KeyB') && boostLeft > 0 ? 5 : 0) : aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
   if (Math.abs(cam.fov - fov) > 0.05) {
     cam.fov += (fov - cam.fov) * Math.min(1, dt * 8);
     cam.updateProjectionMatrix();
@@ -2037,6 +2044,7 @@ function tick(now: number): void {
     exhaust(sim, driving && playing ? Math.max(0, driveInput().throttle) : 0);
     tyres(sim);
     engineSmoke(sim);
+    car.bits.update(sim);
   }
   // Walking up to the car: say how to get in
   const near = !!car && !driving && player.position.distanceTo(car.position) < GET_IN;

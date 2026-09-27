@@ -2,6 +2,13 @@
 // low-pass with a sub-bass thump; the hammer a short knock; the blaster a falling chirp; a
 // collapse a long low rumble. Quieter and duller with distance.
 
+/** A tyre's squeal: its partials (Hz), how narrow each (Q) and how loud (noise through a band that narrow is quiet). */
+const SQUEAL: [number, number, number][] = [
+  [980, 45, 5],
+  [1460, 38, 3.2],
+  [2230, 30, 1.8],
+];
+
 export class Sounds {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -11,8 +18,13 @@ export class Sounds {
   /** Your own suit's sounds, beside the master (its own volume), muffled less: heard through the suit, not the hull. */
   private suit: GainNode | null = null;
   private suitFilter: BiquadFilterNode | null = null;
-  /** The tyres' screech: a squeal and a hiss, their level set each frame they slide. */
-  private screech: { squeal: OscillatorNode; gain: GainNode } | null = null;
+  /** The tyres' screech: the squeal's partials, the hiss and the scrub, their levels set each frame they slide. */
+  private screech: {
+    gain: GainNode;
+    partials: { band: BiquadFilterNode; g: GainNode; hz: number; level: number; drift: number }[];
+    hissLevel: GainNode;
+    scrubLevel: GainNode;
+  } | null = null;
   /** The jets' rush: one looping noise, its level and band set each frame they fire. */
   private jets: { band: BiquadFilterNode; gain: GainNode } | null = null;
   private noise: AudioBuffer | null = null;
@@ -63,50 +75,66 @@ export class Sounds {
   }
 
   /**
-   * Tyres screeching (`amount` 0..1; call each frame they slide): a wavering squeal over the rubber's hiss,
-   * higher and louder the harder they slide. Unless called again it dies away by itself.
+   * Tyres screeching (`amount` 0..1; call each frame they slide). Rubber stick-slipping on tarmac: noise rung
+   * through a few very narrow resonances (the squeal's partials, not an oscillator's steady tone), each wandering
+   * in pitch by its own random walk and fluttering in level, over a broad hiss and the low rumble of the scrub;
+   * the harder the slide, the higher, louder and rawer. Unless called again it dies away by itself.
    */
   skid(amount: number): void {
     const { ctx } = this;
     if (!ctx || !this.master || !this.noise) return;
     if (!this.screech) {
-      // The squeal: a sawtooth whose pitch wavers, through a narrow band; the hiss: noise through a wide one
-      const squeal = ctx.createOscillator();
-      squeal.type = 'sawtooth';
-      const waver = ctx.createOscillator();
-      waver.frequency.value = 7;
-      const depth = ctx.createGain();
-      depth.gain.value = 45;
-      waver.connect(depth).connect(squeal.frequency);
-      const band = ctx.createBiquadFilter();
-      band.type = 'bandpass';
-      band.frequency.value = 1100;
-      band.Q.value = 6;
-      const rubber = ctx.createBufferSource();
-      rubber.buffer = this.noise;
-      rubber.loop = true;
-      const wide = ctx.createBiquadFilter();
-      wide.type = 'bandpass';
-      wide.frequency.value = 2200;
-      wide.Q.value = 0.8;
-      const hiss = ctx.createGain();
-      hiss.gain.value = 0.6;
       const gain = ctx.createGain();
       gain.gain.value = 0;
-      squeal.connect(band).connect(gain);
-      rubber.connect(wide).connect(hiss).connect(gain);
       gain.connect(this.master);
-      squeal.start();
-      waver.start();
-      rubber.start();
-      this.screech = { squeal, gain };
+      const source = () => {
+        const n = ctx.createBufferSource();
+        n.buffer = this.noise;
+        n.loop = true;
+        n.playbackRate.value = 0.9 + Math.random() * 0.2;
+        n.start(0, Math.random() * 2);
+        return n;
+      };
+      // The squeal: three partials, each its own noise through a narrow band
+      const partials = SQUEAL.map(([hz, q, level]) => {
+        const band = ctx.createBiquadFilter();
+        band.type = 'bandpass';
+        band.frequency.value = hz;
+        band.Q.value = q;
+        const g = ctx.createGain();
+        g.gain.value = level;
+        source().connect(band).connect(g).connect(gain);
+        return { band, g, hz, level, drift: 0 };
+      });
+      // The hiss of it and the scrub's rumble
+      const hiss = ctx.createBiquadFilter();
+      hiss.type = 'bandpass';
+      hiss.frequency.value = 3200;
+      hiss.Q.value = 0.7;
+      const hissLevel = ctx.createGain();
+      hiss.connect(hissLevel).connect(gain);
+      source().connect(hiss);
+      const scrub = ctx.createBiquadFilter();
+      scrub.type = 'lowpass';
+      scrub.frequency.value = 260;
+      const scrubLevel = ctx.createGain();
+      scrub.connect(scrubLevel).connect(gain);
+      source().connect(scrub);
+      this.screech = { gain, partials, hissLevel, scrubLevel };
     }
     const t = ctx.currentTime;
-    const { squeal, gain } = this.screech;
+    const { gain, partials, hissLevel, scrubLevel } = this.screech;
     gain.gain.cancelScheduledValues(t);
-    gain.gain.setTargetAtTime(0.05 + 0.1 * amount, t, 0.04);
-    gain.gain.setTargetAtTime(0, t + 0.06, 0.08);
-    squeal.frequency.setTargetAtTime(820 + 260 * amount, t, 0.1);
+    gain.gain.setTargetAtTime(0.35 + 0.5 * amount, t, 0.05);
+    gain.gain.setTargetAtTime(0, t + 0.06, 0.1);
+    // Each partial wanders (a random walk, pulled back to its pitch, higher the harder it slides) and flutters
+    for (const p of partials) {
+      p.drift = p.drift * 0.92 + (Math.random() - 0.5) * 0.05;
+      p.band.frequency.setTargetAtTime(p.hz * (1 + 0.18 * amount + p.drift), t, 0.03);
+      p.g.gain.setTargetAtTime(p.level * (0.55 + 0.45 * Math.random()), t, 0.02);
+    }
+    hissLevel.gain.setTargetAtTime(0.05 + 0.12 * amount, t, 0.05);
+    scrubLevel.gain.setTargetAtTime(0.18 + 0.2 * amount, t, 0.05);
   }
 
   /**
