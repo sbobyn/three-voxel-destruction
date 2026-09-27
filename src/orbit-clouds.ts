@@ -21,8 +21,8 @@ import { generateNoise, makeVolumeTexture } from './clouds/noise-gpu.ts';
  * bigger, their tops, sides and thickness showing.
  */
 const EARTH_KM = 900;
-/** The cloud noise at the layer's own scale. */
-const NOISE_SCALE = 1;
+/** The cloud noise, coarser than the layer's own: bigger clouds. */
+const NOISE_SCALE = 0.55;
 
 export class OrbitClouds {
   /** The quad the clouds are drawn on (the camera's child: add it to the camera). */
@@ -48,16 +48,21 @@ export class OrbitClouds {
     const world = (offset: THREE.Node<'vec3'>) => this.weatherOrigin.add(this.weatherFrame.mul(offset));
     const coverage = (offset: THREE.Node<'vec3'>) => {
       const w = world(offset);
-      const n = mx_noise_float(w.mul(1 / 260)).mul(0.65).add(mx_noise_float(w.mul(1 / 90)).mul(0.35));
-      return smoothstep(-0.2, 0.45, n).mul(0.66).add(0.04);
+      // Few, broad systems: most of the globe clear, the rest well covered
+      const n = mx_noise_float(w.mul(1 / 320)).mul(0.75).add(mx_noise_float(w.mul(1 / 110)).mul(0.25));
+      return smoothstep(-0.15, 0.3, n).mul(0.75).add(0.02);
     };
     const weather = (offset: THREE.Node<'vec3'>) => {
       const w = world(offset);
-      return mx_noise_float(w.mul(1 / 40)).mul(0.35).add(mx_noise_float(w.mul(1 / 15)).mul(0.2)).add(0.5);
+      return mx_noise_float(w.mul(1 / 70)).mul(0.35).add(mx_noise_float(w.mul(1 / 25)).mul(0.2)).add(0.5);
     };
     this.layer = createCloudLayer({ base: this.base, detail: this.detail, worldFrame: true, coverage, weather });
     const u = this.layer.uniforms;
     u.radius.value = EARTH_KM;
+    // A deep layer, dense: towering heaps, not a thin deck
+    u.bottom.value = 1.5;
+    u.top.value = 7;
+    u.density.value = 28;
     // The planet adapter's display settings, at its orbit quality
     u.early.value = 1;
     u.skip.value = 1;
