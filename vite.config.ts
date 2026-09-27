@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   resolve: {
-    // One Three.js: three-avbd is linked from its own checkout (with its own copy of three)
+    // One Three.js, even if three-avbd is linked from a checkout of its own (pnpm link) to work on both
     dedupe: ['three'],
   },
   server: {

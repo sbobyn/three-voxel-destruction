@@ -20,9 +20,9 @@ and the particles on their own.
 ## three-avbd
 
 It uses the solver through `three-avbd/advanced` (`GpuSolver3D` and the buffer layouts), since
-it runs its own compute pass over the bodies (blasts). Until three-avbd is on npm,
-`package.json` links it from a checkout next to this one (`../three-avbd`, built with
-`pnpm build:lib`). Once it's published, switch the dependency to `"three-avbd": "^0.1.0"`.
+it runs its own compute pass over the bodies (blasts). It depends on the published package
+(`three-avbd` on npm). To work on both at once, link a checkout: `pnpm link ../three-avbd`
+(after `pnpm build:lib` there).
 
 The city is z-up (the solver's `up` is set to `REF_UP`).
 
