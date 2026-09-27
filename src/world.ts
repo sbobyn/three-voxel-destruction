@@ -698,7 +698,8 @@ export function voxelAt(city: City, x: number, y: number, z: number): number {
     const yi = yv - b.y0;
     if (xi < 0 || yi < 0 || xi >= b.w || yi >= b.d || zi >= b.h) continue;
     const v = b.cells[xi + b.w * (yi + b.d * zi)];
-    return v >= 0 && city.state[v] === State.Fixed ? v : -1;
+    // (Objects' boxes can overlap: an empty cell in one isn't the answer)
+    if (v >= 0 && city.state[v] === State.Fixed) return v;
   }
   return -1;
 }

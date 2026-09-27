@@ -859,6 +859,79 @@ export class CityRenderer {
   }
 
   /**
+   * Draw the race track on the ground instead of streets (track.ts): `field` is its picture
+   * (trackField: per texel of a `size` square over ±`extent` m, the signed distance to the
+   * middle line, round-the-lap distance, corner and turn). Asphalt with white edge lines,
+   * red-and-white kerbs in the bends, gravel run-off outside them, a chequered start line at
+   * x = `startX` on the main straight, a paved pit lane, and mown grass everywhere else.
+   */
+  setTrack(field: Float32Array, size: number, extent: number, width: number, kerb: number, runoff: number, startX: number, pits: [number, number, number, number]): void {
+    const material = this.groundMaterial!;
+    // Half floats (filterable everywhere): distance, the kerb stripes' phase, corner × turn
+    const half = new Uint16Array(size * size * 4);
+    for (let t = 0; t < size * size; t++) {
+      half[4 * t] = THREE.DataUtils.toHalfFloat(field[4 * t]);
+      half[4 * t + 1] = THREE.DataUtils.toHalfFloat(Math.cos(Math.PI * field[4 * t + 1]));
+      half[4 * t + 2] = THREE.DataUtils.toHalfFloat(field[4 * t + 2] * field[4 * t + 3]);
+      half[4 * t + 3] = 0;
+    }
+    const tex = new THREE.DataTexture(half, size, size, THREE.RGBAFormat, THREE.HalfFloatType);
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    const p = positionWorld.xy;
+    const at = p.add(extent).div(2 * extent);
+    const inside = at.x.greaterThan(0).and(at.y.greaterThan(0)).and(at.x.lessThan(1)).and(at.y.lessThan(1));
+    const f = texture(tex, at);
+    const sd = select(inside, f.r, float(30));
+    const d = abs(sd);
+    const bend = select(inside, f.b, float(0));
+    const n = mx_noise_float(vec3(p.mul(0.35), 0)).mul(0.5).add(0.5);
+    const far = positionWorld.sub(cameraPosition).length();
+    const fine = mix(float(0.5), mx_noise_float(vec3(p.mul(4), 1)).mul(0.5).add(0.5), smoothstep(float(90), float(20), far));
+    let asphalt = vec3(0.1, 0.095, 0.09).mul(n.mul(0.35).add(0.8)).mul(fine.mul(0.25).add(0.88)) as unknown as Vec3;
+    let paving = vec3(0.5, 0.49, 0.46) as unknown as Vec3;
+    const onTrack = d.lessThan(width / 2);
+    if (this.surfaces) {
+      const sa = p.div(SETS[L_ASPHALT].metres);
+      const sc = p.div(SETS[L_CONCRETE].metres);
+      const tar = texture(this.surfaces.diffuse, sa).depth(int(L_ASPHALT));
+      const tarBump = texture(this.surfaces.normal, sa).depth(int(L_ASPHALT));
+      const tarArm = texture(this.surfaces.arm, sa).depth(int(L_ASPHALT));
+      asphalt = tar.rgb.mul(0.8).mul(tarArm.r.mul(0.4).add(0.6)).mul(n.mul(0.2).add(0.9)) as unknown as Vec3;
+      paving = texture(this.surfaces.diffuse, sc).depth(int(L_CONCRETE)).rgb.mul(0.85) as unknown as Vec3;
+      const bump = tarBump.rgb.mul(2).sub(1);
+      const near = smoothstep(float(90), float(25), far);
+      const bent = mix(vec3(0, 0, 1), vec3(bump.x, bump.y, bump.z.mul(2)), near.mul(select(onTrack, float(1), float(0))));
+      material.normalNode = transformNormalToView(normalize(bent)) as unknown as THREE.Node<'vec3'>;
+    }
+    const line = (dd: Float, w: number) => smoothstep(float(w), float(w * 0.6), abs(dd));
+    const edge = line(d.sub(width / 2 - 0.45), 0.12);
+    // The start line: a chequered band across the main straight
+    const startBand = abs(p.x.sub(startX)).lessThan(1.2).and(p.y.lessThan(-60)).and(onTrack);
+    const checker = mod(floor(p.x.div(0.6)).add(floor(p.y.div(0.6))), float(2));
+    let track = mix(asphalt, vec3(0.8, 0.8, 0.76), edge.mul(fine.mul(0.3).add(0.7))) as unknown as Vec3;
+    track = select(startBand, mix(vec3(0.04, 0.04, 0.04), vec3(0.85, 0.85, 0.82), checker), track) as unknown as Vec3;
+    // Kerbs: a metre of red, a metre of white, in the bends
+    const isKerb = d.greaterThanEqual(width / 2).and(d.lessThan(width / 2 + kerb)).and(abs(bend).greaterThan(0.5));
+    const stripe = step(float(0), f.g);
+    const kerbColour = mix(vec3(0.62, 0.07, 0.05), vec3(0.85, 0.84, 0.8), stripe).mul(fine.mul(0.2).add(0.85));
+    // Gravel run-off on the outside of the bends (the side the car would slide off)
+    const outside = sd.mul(bend).lessThan(0);
+    const isGravel = outside.and(abs(bend).greaterThan(0.3)).and(d.lessThan(width / 2 + kerb + runoff)).and(d.greaterThanEqual(width / 2 + kerb));
+    const gravel = vec3(0.56, 0.5, 0.4).mul(mx_noise_float(vec3(p.mul(2.5), 3)).mul(0.25).add(0.85)).mul(fine.mul(0.3).add(0.8));
+    // Grass, mown in stripes
+    const mown = step(fract(p.x.add(p.y.mul(0.2)).div(12)), float(0.5));
+    const grass = mix(vec3(0.09, 0.16, 0.05), vec3(0.2, 0.26, 0.09), n).mul(mix(float(0.88), float(1.08), mown)).mul(fine.mul(0.3).add(0.8));
+    // The pit lane: paved, behind the pit wall
+    const inPits = p.x.greaterThan(pits[0]).and(p.x.lessThan(pits[2])).and(p.y.greaterThan(pits[1])).and(p.y.lessThan(pits[3]));
+    const colour = select(onTrack, track, select(isKerb, kerbColour, select(isGravel, gravel, select(inPits, paving, grass))));
+    material.colorNode = colour as unknown as THREE.Node<'color'>;
+    material.roughnessNode = select(onTrack.or(isKerb), float(0.8), float(0.9));
+    material.needsUpdate = true;
+  }
+
+  /**
    * Reflections and sky light: a dome from the sky's own colours (its horizon, a deeper blue
    * overhead, the sun's glow and disc, dim ground below), prefiltered for rough and smooth
    * surfaces. The real sky can't be captured: its clouds are drawn from the player's camera.

@@ -109,6 +109,13 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 }
 .hud .stats { position: absolute; right: 14px; top: 12px; font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; text-shadow: 0 1px 3px #000; opacity: 0.85; white-space: pre; }
 .hud .flash { position: absolute; inset: 0; background: radial-gradient(circle, rgba(255,210,150,0.35), rgba(255,140,60,0) 70%); opacity: 0; transition: opacity 400ms ease-out; }
+.hud .speedo { position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%); text-align: center; text-shadow: 0 2px 6px #000; display: none; }
+.hud .speedo .v { font: 800 44px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -0.02em; }
+.hud .speedo .u { font-size: 11px; opacity: 0.7; letter-spacing: 0.12em; }
+.hud .speedo .boost { height: 4px; width: 120px; margin: 8px auto 0; border-radius: 2px; background: rgba(255,255,255,0.15); overflow: hidden; }
+.hud .speedo .boost i { display: block; height: 100%; background: #ff8a3d; }
+.hud.driving .dock, .hud.driving .tip, .hud.driving .picked { display: none; }
+.hud.driving .speedo { display: block; }
 .hud .keys { position: absolute; left: 14px; top: 12px; font-size: 11.5px; line-height: 1.6; opacity: 0.7; text-shadow: 0 1px 3px #000; }
 .hud .keys b { display: inline-block; min-width: 18px; padding: 0 4px; border-radius: 4px; background: rgba(255,255,255,0.14); text-align: center; margin-right: 4px; font-weight: 600; }
 .menu { position: fixed; inset: 0; z-index: 10; overflow-y: auto; display: flex; align-items: safe center; justify-content: center; padding: 12px 0; box-sizing: border-box; background: radial-gradient(ellipse at center, rgba(10,12,16,0.55), rgba(6,7,10,0.85)); backdrop-filter: blur(4px); }
@@ -129,6 +136,28 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 .hud .toast { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); padding: 6px 14px; border-radius: 8px; background: rgba(14,16,20,0.6); font-size: 13px; font-weight: 600; opacity: 0; transition: opacity 300ms; }
 .loading { position: fixed; left: 50%; top: 58%; transform: translateX(-50%); font-size: 13px; opacity: 0.7; }
 `;
+
+/** The key help on foot, and in the car. */
+const ON_FOOT = [
+  ['WASD', 'move'],
+  ['Mouse', 'look · L use · R aim'],
+  ['Space / Q', 'up / down (fly), jump (walk)'],
+  ['Shift', 'boost · Alt creep'],
+  ['Wheel', 'switch tool · hold Tab: tool wheel'],
+  ['F', 'fly / walk'],
+  ['X', 'slow motion'],
+  ['Esc', 'menu'],
+];
+const DRIVING = [
+  ['W / S', 'throttle · brake, reverse'],
+  ['A / D', 'steer'],
+  ['Space', 'handbrake'],
+  ['Shift', 'boost'],
+  ['Mouse', 'look round · L fire the cannons'],
+  ['F', 'get out'],
+  ['X', 'slow motion'],
+  ['Esc', 'menu'],
+];
 
 export class Hud {
   private readonly root = document.createElement('div');
@@ -163,6 +192,8 @@ export class Hud {
   private readonly slots: HTMLElement[] = [];
   private readonly toastEl = document.createElement('div');
   private toastTimer = 0;
+  private readonly keysEl = document.createElement('div');
+  private readonly speedo = document.createElement('div');
 
   readonly tools: Tool[];
   readonly settings: Settings;
@@ -179,20 +210,11 @@ export class Hud {
     this.tip.className = 'tip';
     this.statsLine.className = 'stats';
     this.flashEl.className = 'flash';
-    const keys = document.createElement('div');
+    const keys = this.keysEl;
     keys.className = 'keys';
-    keys.innerHTML = [
-      ['WASD', 'move'],
-      ['Mouse', 'look · L use · R aim'],
-      ['Space / Q', 'up / down (fly), jump (walk)'],
-      ['Shift', 'boost · Alt creep'],
-      ['Wheel', 'switch tool · hold Tab: tool wheel'],
-      ['F', 'fly / walk'],
-      ['X', 'slow motion'],
-      ['Esc', 'menu'],
-    ]
-      .map(([k, v]) => `<b>${k}</b>${v}`)
-      .join('<br>');
+    this.setKeys(ON_FOOT);
+    this.speedo.className = 'speedo';
+    this.speedo.innerHTML = `<div class="v">0</div><div class="u">KM/H</div><div class="boost"><i></i></div>`;
     for (const [i, t] of tools.entries()) {
       const slot = document.createElement('div');
       slot.className = 'slot';
@@ -281,7 +303,7 @@ export class Hud {
     this.wheelPointer.className = 'pointer';
     this.wheel.append(this.wheelCentre, this.wheelPointer);
     this.toastEl.className = 'toast';
-    this.root.append(this.flashEl, this.cross, this.dock, this.tip, this.picked, this.wheel, this.statsLine, keys, this.toastEl);
+    this.root.append(this.flashEl, this.cross, this.dock, this.tip, this.picked, this.wheel, this.statsLine, keys, this.speedo, this.toastEl);
     let learn = true;
     try {
       learn = !localStorage.getItem('city.switched');
@@ -519,6 +541,23 @@ export class Hud {
 
   stats(text: string): void {
     this.statsLine.textContent = text;
+  }
+
+  /** The key help, top left: [key, what] rows. */
+  setKeys(rows: string[][]): void {
+    this.keysEl.innerHTML = rows.map(([k, v]) => `<b>${k}</b>${v}`).join('<br>');
+  }
+
+  /** Driving: the speedometer and the car's keys instead of the tool bar (the track). */
+  setDriving(on: boolean): void {
+    this.root.classList.toggle('driving', on);
+    this.setKeys(on ? DRIVING : ON_FOOT);
+  }
+
+  /** The speedometer: km/h, and the boost left (0..1). */
+  speed(kmh: number, boost: number): void {
+    (this.speedo.firstElementChild as HTMLElement).textContent = String(Math.round(Math.abs(kmh)));
+    (this.speedo.querySelector('.boost i') as HTMLElement).style.width = `${Math.round(boost * 100)}%`;
   }
 
   /** A warm flash over the screen, stronger for nearer, bigger blasts (0..1). */

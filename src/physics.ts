@@ -679,6 +679,34 @@ export class CityPhysics {
     return { voxels, data: all.subarray(0, voxels.length * 12), sections, sectionData: all.subarray(voxels.length * 12) };
   }
 
+  /**
+   * A body for a vehicle driven from the CPU (a section slot): a fixed box of `size` (m) that
+   * `drive` moves each step. Fixed with a velocity, it's kinematic in the solver: it shoves the
+   * debris it runs into and carries what lands on it, and nothing pushes it back. (Fixed voxels
+   * it can't touch: the solver never pairs two fixed bodies, so what it breaks, it breaks on
+   * the CPU.) Returns the slot, or -1 if none is free.
+   */
+  vehicle(size: number[], at: ArrayLike<number>): number {
+    const slot = this.freeSlots.pop();
+    if (slot === undefined) return -1;
+    this.solver.rewriteFixed([slot], at, size, 0.6);
+    return slot;
+  }
+
+  /**
+   * The vehicle in `slot` is at `at` turned by `q` (xyzw) now, moving at `v` and turning at `w`
+   * (rad/s about each axis): the step advances it by them, so it's where the CPU will have it
+   * after the step, sliding there (contacts see it move) rather than jumping.
+   */
+  drive(slot: number, at: ArrayLike<number>, q: ArrayLike<number>, v: ArrayLike<number>, w: ArrayLike<number>): void {
+    const base = slot * BODY_FLOATS * 4;
+    const put = (offset: number, values: ArrayLike<number>) => this.device.queue.writeBuffer(this.bodyBuffer, base + offset * 4, new Float32Array(Array.from(values)));
+    put(B_POS, [at[0], at[1], at[2]]);
+    put(B_ROT, [q[0], q[1], q[2], q[3]]);
+    put(B_VEL, [v[0], v[1], v[2]]);
+    put(B_ANGVEL, [w[0], w[1], w[2]]);
+  }
+
   /** Throw a ball (radius m, density) from `at` with velocity `v`, reusing the oldest spare. */
   throwBall(at: ArrayLike<number>, v: ArrayLike<number>, radius: number, ballDensity: number): number {
     const slot = this.spares[this.nextSpare];

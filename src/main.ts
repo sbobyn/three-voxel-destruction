@@ -18,7 +18,9 @@ import { CitySky } from './sky.ts';
 import { buzz, preventZoom, TouchControls, wantsTouch } from './touch.ts';
 import { Structure } from './structure.ts';
 import { ViewModel } from './viewmodel.ts';
-import { buildCity, emptyCity, isGlass, Mat, raycast, VOXEL, voxelAt } from './world.ts';
+import { buildCity, type City, emptyCity, isGlass, Mat, raycast, VOXEL, voxelAt } from './world.ts';
+import { buildTrack, gridSlot, KERB, RUNOFF, TRACK_WIDTH, trackField, type TrackLine } from './track.ts';
+import { CAR_MASS, CAR_SIZE, CLEARANCE, Car, type Drive, sweep } from './car.ts';
 import { chooseProfile, type DeviceProfile, deviceKey, forgetProfile, measureFrames, measurePhysics, type Quality, saveProfile, savedProfile } from './calibrate.ts';
 import { Loader } from './loader.ts';
 
@@ -55,6 +57,25 @@ interface Effects {
   update(dt: number, camera: THREE.Camera): void;
 }
 const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, update() {} };
+
+/** Which world: the city block (the default) or the race track (?scene=track). */
+const SCENE: 'city' | 'track' = new URLSearchParams(location.search).get('scene') === 'track' ? 'track' : 'city';
+/** The track's middle line (the track scene). */
+let line: TrackLine | null = null;
+/** The race car (the track), whether the player's in it, its body in the solver, the boost left (0..1). */
+let car: Car | null = null;
+let driving = false;
+let carSlot = -1;
+let boostLeft = 1;
+/** The chase camera: its yaw (following the car's heading), the mouse's look round and up (eased back when let go). */
+const chase = { yaw: 0, orbit: 0, lift: 0, idle: 0 };
+/** Build the scene's world (and, at the track, its line). */
+function buildWorld(): City {
+  if (SCENE === 'city') return buildCity();
+  const built = buildTrack();
+  line = built.line;
+  return built.city;
+}
 
 const canvas = document.querySelector('#view') as HTMLCanvasElement;
 /** Phones and tablets get thumb sticks and buttons (touch.ts) and start a notch lower in quality. */
@@ -171,7 +192,7 @@ addEventListener('keydown', (e) => {
   // extensions take those before the page sees them)
   // Hold Tab: the tool wheel (the mouse aims it instead of turning the view)
   if (e.code === 'Tab' && !hud.wheelOpen) hud.openWheel();
-  if (e.code === 'KeyF') toggleFly();
+  if (e.code === 'KeyF') pressF();
   if (e.code === 'KeyR') void rebuild();
   if (e.code === 'KeyX') {
     timeScale = timeScale === 1 ? SLOW : 1;
@@ -209,6 +230,31 @@ addEventListener('mousemove', (e) => {
 });
 /** Mouse movement since the last frame (pixels), turned into a turn of the view once a frame. */
 const look = { x: 0, y: 0, sx: 0, sy: 0 };
+/** F: into the car or out of it (at the track, near it), else flying or walking. */
+function pressF(): void {
+  if (car && (driving || player.position.distanceTo(car.position) < 6)) setDriving(!driving);
+  else toggleFly();
+}
+/** Into the car (the chase view behind it) or out of it (standing by its door, on foot). */
+function setDriving(on: boolean): void {
+  if (!car) return;
+  driving = on;
+  hud.setDriving(on);
+  hand.object.visible = !on;
+  touch?.setFlying(on || player.flying);
+  if (on) {
+    chase.yaw = car.heading;
+    chase.orbit = chase.lift = 0;
+    return;
+  }
+  const f = car.forward;
+  player.position.set(car.position.x - f.y * 2.3, car.position.y + f.x * 2.3, 0);
+  player.velocity.set(0, 0, 0);
+  player.flying = false;
+  player.yaw = car.heading;
+  player.pitch = 0;
+  car.wantGuns = false;
+}
 function toggleFly(): void {
   player.flying = !player.flying;
   player.velocity.set(0, 0, 0);
@@ -216,6 +262,15 @@ function toggleFly(): void {
   touch?.setFlying(player.flying);
 }
 function turn(dt: number): void {
+  if (driving) {
+    const thumb = touch && playing ? touch.takeLook() : { x: 0, y: 0 };
+    const [mx, my] = [look.x * 0.0017 + thumb.x * TOUCH_LOOK, look.y * 0.0017 + thumb.y * TOUCH_LOOK];
+    look.x = look.y = 0;
+    chase.orbit -= mx * settings.sensitivity;
+    chase.lift = Math.max(-0.15, Math.min(0.9, chase.lift - my * settings.sensitivity * (settings.invertY ? -1 : 1)));
+    if (mx || my) chase.idle = 0;
+    return;
+  }
   if (touch && playing) {
     // Dragging to look: the view follows the thumb (radians per pixel), a little faster for
     // quick flicks so a turn doesn't take a whole swipe
@@ -376,7 +431,7 @@ touch = touchDevice
         if (down) wantFire = true;
       },
       aim: (on) => (aiming = on),
-      toggleFly: () => toggleFly(),
+      toggleFly: () => pressF(),
       pause: () => {
         touchPlaying = false;
         playing = captured || testing;
@@ -414,8 +469,16 @@ const concreteDust = new THREE.Color(0.62, 0.6, 0.56);
 
 /** Start on the pavement off the tower's rounded corner, looking up at it: the shopfront and the blade sign in view, the tower rising overhead. */
 function spawn(): void {
-  player.position.set(-27, -12, 0);
   player.velocity.set(0, 0, 0);
+  if (SCENE === 'track' && line) {
+    // On the grid behind the start line, looking down the main straight at the wall across it
+    const { position, heading } = gridSlot(line);
+    player.position.set(position[0], position[1], 0);
+    player.yaw = heading;
+    player.pitch = 0.05;
+    return;
+  }
+  player.position.set(-27, -12, 0);
   player.yaw = 0.3;
   player.pitch = 0.38;
 }
@@ -423,7 +486,7 @@ function spawn(): void {
 /** The stages of starting up, as the loading bar shows them (weights: their share of the bar). */
 const loader = new Loader([
   { name: 'Starting the GPU and loading materials', weight: 4 },
-  { name: 'Building the building', weight: 2 },
+  { name: SCENE === 'track' ? 'Building the track' : 'Building the building', weight: 2 },
   { name: 'Starting the physics', weight: 2 },
   { name: 'Lighting the sky', weight: 1 },
   { name: 'Compiling shaders', weight: 3 },
@@ -435,7 +498,7 @@ async function start(): Promise<void> {
   const device = await view.init((share) => loader.progress(share));
 
   await loader.stage(1);
-  city = buildCity();
+  city = buildWorld();
   structure = new Structure(city);
   (player as unknown as { city: typeof city }).city = city;
   chips.city = city;
@@ -448,14 +511,27 @@ async function start(): Promise<void> {
   physics.onCarry = (bodies, parent, offsets) => view.setLinks(bodies, parent, offsets);
   view.setPaints(city, physics.voxelOf);
   view.attachBalls(physics.spares);
-  view.setStreets(city);
-  view.scene.add(skyline(city));
+  if (SCENE === 'track' && line) {
+    // Open country: the air clearer than over the city, so the far side of the circuit shows
+    (view.scene.fog as THREE.FogExp2).density = 0.0011;
+    const extent = 240;
+    view.setTrack(trackField(line, 1024, extent), 1024, extent, TRACK_WIDTH, KERB, RUNOFF, line.points[2 * line.start], [-160, -82, -95, -60]);
+  } else {
+    view.setStreets(city);
+    view.scene.add(skyline(city));
+  }
   effects = startEffects();
   spawn();
+  if (SCENE === 'track' && line) {
+    car = new Car();
+    view.scene.add(car.object);
+    placeCar();
+    setDriving(true);
+  }
 
   await loader.stage(3);
   await startSky();
-  view.camera.position.set(-27, -12, 1.7);
+  view.camera.position.set(player.position.x, player.position.y, 1.7);
 
   await loader.stage(4);
   // The scene's and the smoke's materials compile without blocking the page, then a frame
@@ -507,9 +583,12 @@ async function tune(device: GPUDevice, key: string): Promise<DeviceProfile> {
   loader.detail('Timing the drawing…');
   // A charge's smoke and a collapse's dust in front of the building, seen from the street
   spawn();
-  effects.explosion([0, -7.5, 5], 4.5);
+  // (In front of the spawn point, wherever the scene puts it)
+  const ahead = new THREE.Vector3(Math.cos(player.yaw), Math.sin(player.yaw), 0).multiplyScalar(18).add(player.position);
+  const off = SCENE === 'city' ? new THREE.Vector3(0, -7.5, 0) : ahead;
+  effects.explosion([off.x, off.y, 5], 4.5);
   const dust: number[] = [];
-  for (let k = 0; k < 400; k++) dust.push((Math.random() - 0.5) * 16, -7.5 - Math.random() * 4, Math.random() * 6);
+  for (let k = 0; k < 400; k++) dust.push(off.x + (Math.random() - 0.5) * 16, off.y - Math.random() * 4, Math.random() * 6);
   effects.dust(Float32Array.from(dust), 0.6, concreteDust);
   const step = () => tick(last + 1000 / 60);
   for (let k = 0; k < 40; k++) step();
@@ -544,7 +623,7 @@ function applyProfile(p: DeviceProfile): void {
 async function rebuild(): Promise<void> {
   alarms.clear();
   physics.destroy();
-  city = buildCity();
+  city = buildWorld();
   structure = new Structure(city);
   (player as unknown as { city: typeof city }).city = city;
   chips.city = city;
@@ -558,6 +637,150 @@ async function rebuild(): Promise<void> {
   view.setPaints(city, physics.voxelOf);
   view.attachBalls(physics.spares);
   player.debrisCount = 0;
+  if (car) placeCar();
+}
+
+/** The car back on the grid, at rest, with its body in the (new) solver. */
+function placeCar(): void {
+  if (!car || !line) return;
+  const { position, heading } = gridSlot(line);
+  car.place(position[0], position[1], heading);
+  carSlot = physics.vehicle(CAR_SIZE, [position[0], position[1], CLEARANCE + CAR_SIZE[2] / 2]);
+  boostLeft = 1;
+  chase.yaw = heading;
+}
+
+/** The car's controls: keys and the thumb stick (throttle up, steer across), or coasting to a stop with no one in it. */
+function driveInput(): Drive {
+  if (!driving || !playing) return { throttle: 0, steer: 0, handbrake: true, boost: false };
+  const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
+  const clamp = (v: number) => Math.max(-1, Math.min(1, v));
+  const stick = touch?.move ?? { forward: 0, right: 0 };
+  return {
+    throttle: clamp(k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown') + stick.forward),
+    steer: clamp(k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight') - stick.right),
+    handbrake: keys.has('Space') || touch?.up === true,
+    boost: (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch?.sprint === true) && boostLeft > 0,
+  };
+}
+
+/**
+ * One world step of the car: its handling in parts of no more than a third of a metre (a fast
+ * car can't pass through a half-metre wall between checks), each part checked against what
+ * still stands: broken through if the car carries enough momentum, else it stops there and
+ * bounces back. Then its body in the solver is set moving from where it was to where it is.
+ */
+function driveStep(dt: number): void {
+  const c = car!;
+  const d = driveInput();
+  boostLeft = Math.max(0, Math.min(1, boostLeft + (d.boost ? -dt * 0.22 : dt * 0.08)));
+  c.begin();
+  const [x0, y0, h0] = [c.position.x, c.position.y, c.heading];
+  const parts = Math.max(1, Math.ceil((c.velocity.length() * dt) / 0.33));
+  for (let k = 0; k < parts; k++) {
+    c.step(dt / parts, d);
+    const hits = sweep(city, c.position.x, c.position.y, c.heading);
+    if (hits.length && !crash(hits)) {
+      c.undo(0.2);
+      break;
+    }
+  }
+  if (carSlot >= 0) {
+    const turn = Math.atan2(Math.sin(c.heading - h0), Math.cos(c.heading - h0));
+    physics.drive(carSlot, [x0, y0, CLEARANCE + CAR_SIZE[2] / 2], [0, 0, Math.sin(h0 / 2), Math.cos(h0 / 2)], [(c.position.x - x0) / dt, (c.position.y - y0) / dt, 0], [0, 0, turn / dt]);
+  }
+}
+
+/**
+ * The car runs into `hits` (fixed voxels): it breaks through if it keeps enough speed after
+ * shoving their mass (its momentum shared with what it hits), blowing them out ahead of it
+ * across the width of its nose, and slows by that much; else it's stopped (false).
+ */
+function crash(hits: number[]): boolean {
+  const c = car!;
+  const v = c.velocity.length();
+  let mass = 0;
+  for (const h of hits) mass += isGlass(city.material[h]) ? 6 : city.material[h] === Mat.Leaf ? 2 : 28;
+  const kept = CAR_MASS / (CAR_MASS + 0.7 * mass);
+  if (v * kept < 3.5) {
+    if (v > 2) {
+      sounds.hammer(2);
+      shake = Math.max(shake, Math.min(0.8, v / 20));
+    }
+    return false;
+  }
+  const f = c.forward;
+  const nose = new THREE.Vector3(c.position.x + f.x * (CAR_SIZE[0] / 2 + 0.15), c.position.y + f.y * (CAR_SIZE[0] / 2 + 0.15), CLEARANCE + 0.55);
+  const at = (h: number) => Array.from(city.position.subarray(3 * h, 3 * h + 3));
+  const near = (a: number[], b: number[], r: number) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2 < r * r;
+  const hitsAt: Hit[] = [];
+  for (const o of [-0.7, 0, 0.7]) {
+    const p = [nose.x - f.y * o, nose.y + f.x * o, nose.z];
+    if (hits.some((h) => near(at(h), p, 1.3))) hitsAt.push({ at: p, radius: 0.95, push: v * 0.5, core: 0.12 });
+  }
+  // What it touched beyond those (a corner clipping a post) goes too
+  for (const h of hits.slice(0, 40)) if (!hitsAt.some((b) => near(at(h), b.at, 0.95))) hitsAt.push({ at: at(h), radius: 0.3, push: v * 0.4, core: 0 });
+  const result = blasts(city, structure, physics, hitsAt);
+  unsettled = true;
+  afterBlast(result, hitsAt);
+  chips.burst(result.gone, nose.toArray(), 2, v * 0.6 + 2);
+  chips.burst(result.loose, nose.toArray(), 0.6, v * 0.5 + 2);
+  const tint = dustTint[city.material[hits[0]]] ?? concreteDust;
+  effects.impact(nose.toArray(), Math.min(20, v), tint);
+  effects.sparks(nose.toArray(), 10, 4 + v * 0.2);
+  const broken = [...result.gone, ...result.loose];
+  const points = new Float32Array(broken.length * 3);
+  broken.forEach((u, k) => points.set(city.position.subarray(3 * u, 3 * u + 3), 3 * k));
+  if (broken.length) effects.dust(points, 0.25, tint);
+  if (result.falling.length > 50) sounds.collapse(result.falling.length, 6);
+  sounds.wreck(3, Math.min(40, v));
+  shake = Math.max(shake, Math.min(1.1, 0.25 + v / 45));
+  c.velocity.multiplyScalar(kept);
+  return true;
+}
+
+/** Cannon shells: a smaller blast than a rocket, quick to reload, fired from each gun in turn. */
+const CANNON: ToolSpec = { name: 'Cannon', icon: '', hint: '', radius: 1.35, core: 0.4, push: 12, explosive: true, reach: 600, cooldown: 0.17, auto: true };
+const SHELL_SPEED = 150;
+let gun = 0;
+/** Seconds since the cannons last fired (they fold away after a while). */
+let gunIdle = 0;
+/** The camera's eye and aim this frame (the cannons fire where it looks). */
+const aimFrom = new THREE.Vector3();
+const aimDir = new THREE.Vector3(1, 0, 0);
+function fireCannon(): void {
+  const c = car!;
+  const muzzle = c.muzzles()[gun];
+  gun = 1 - gun;
+  const hit = raycast(city, aimFrom.toArray(), aimDir.toArray(), CANNON.reach);
+  const to = aimFrom.clone().addScaledVector(aimDir, hit ? hit.t : 400);
+  if (hit) to.addScaledVector(new THREE.Vector3(...hit.normal), -0.3);
+  rockets.push({ from: muzzle, to, t: 0, time: muzzle.distanceTo(to) / SHELL_SPEED, mesh: rocketMesh(0.6), spec: hit ? CANNON : null });
+  sounds.blast(0.5, 4);
+  shake = Math.max(shake, 0.18);
+  effects.sparks(muzzle.toArray(), 6, 6);
+  impacts.hit(muzzle.toArray(), aimDir.toArray(), 0.5, 0.12, hotRing, 0.3);
+}
+
+/** The chase camera behind the car: its eye and the way it looks (into `eye`, `dir`). */
+function chaseView(dt: number): void {
+  const c = car!;
+  const p = c.object.position;
+  const heading = c.object.rotation.z;
+  const turnBy = Math.atan2(Math.sin(heading - chase.yaw), Math.cos(heading - chase.yaw));
+  chase.yaw += turnBy * Math.min(1, dt * 4.5);
+  chase.idle += dt;
+  if (chase.idle > 1.2) {
+    chase.orbit *= Math.exp(-dt * 2.5);
+    chase.lift *= Math.exp(-dt * 2.5);
+  }
+  const speed = Math.abs(c.speed);
+  const yaw = chase.yaw + chase.orbit;
+  const dist = 6.4 + Math.min(3, speed * 0.035);
+  const pitch = 0.19 + chase.lift;
+  eye.set(p.x - Math.cos(yaw) * dist * Math.cos(pitch), p.y - Math.sin(yaw) * dist * Math.cos(pitch), 1.1 + dist * Math.sin(pitch));
+  eye.z = Math.max(0.5, eye.z);
+  dir.set(p.x + Math.cos(yaw) * 16 - eye.x, p.y + Math.sin(yaw) * 16 - eye.y, 1.2 - eye.z).normalize();
 }
 
 /**
@@ -816,7 +1039,7 @@ const dir = new THREE.Vector3();
 let shake = 0;
 /** The block being destroyed (its middle, m) and how far out from it stays in focus (m). */
 const BLOCK_CENTRE = new THREE.Vector2(0, 0);
-const BLOCK_REACH = 22;
+const BLOCK_REACH = SCENE === 'track' ? 150 : 22;
 /** Depth of field: the distance wanted in focus, the eased one, and the bokeh's size (eased). */
 let focusWant = 30;
 let focusAt = 30;
@@ -1034,9 +1257,10 @@ function planBall(from: THREE.Vector3, v: THREE.Vector3, r: number): void {
 
 // Rockets in flight
 const ROCKET_SPEED = 70;
-const rockets: { from: THREE.Vector3; to: THREE.Vector3; t: number; time: number; mesh: THREE.Object3D }[] = [];
-function rocketMesh(): THREE.Object3D {
+const rockets: { from: THREE.Vector3; to: THREE.Vector3; t: number; time: number; mesh: THREE.Object3D; spec?: ToolSpec | null }[] = [];
+function rocketMesh(scale = 1): THREE.Object3D {
   const g = new THREE.Group();
+  g.scale.setScalar(scale);
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.6, 10), new THREE.MeshStandardMaterial({ color: 0x5a5f55, roughness: 0.6 }));
   body.rotation.x = Math.PI / 2;
   const flame = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(4, 2.2, 0.8) }));
@@ -1057,7 +1281,7 @@ function flyRockets(dt: number): void {
     effects.impact(r.mesh.position.toArray(), 3, smokeTint);
     if (f >= 1) {
       view.scene.remove(r.mesh);
-      detonate(r.to, TOOLS[2], player.position.distanceTo(r.to));
+      if (r.spec !== null) detonate(r.to, r.spec ?? TOOLS[2], player.position.distanceTo(r.to));
       rockets.splice(k, 1);
     }
   }
@@ -1357,19 +1581,31 @@ function tick(now: number): void {
   fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
   if (playing) {
     turn(dt);
-    const stride = Math.floor(player.walk / Math.PI);
-    player.update(dt, input());
-    // Footsteps at each half stride; a thud and a dip on landing
-    if (player.onGround && Math.floor(player.walk / Math.PI) !== stride) sounds.step(keys.has('ShiftLeft'));
-    if (player.landed > 4) {
-      sounds.land(player.landed);
-      dip = Math.min(0.25, player.landed * 0.02);
-    }
     cooldown -= dt;
-    const t = TOOLS[tool];
-    if ((wantFire || (held && t.auto)) && cooldown <= 0) {
-      useTool();
-      cooldown = t.cooldown;
+    if (driving && car) {
+      // The cannons rise while the trigger's held, fire once they're up, and fold away after a while
+      if (held || wantFire) {
+        car.wantGuns = true;
+        gunIdle = 0;
+        if (car.deployed > 0.95 && cooldown <= 0) {
+          fireCannon();
+          cooldown = CANNON.cooldown;
+        }
+      } else if ((gunIdle += dt) > 2.5) car.wantGuns = false;
+    } else {
+      const stride = Math.floor(player.walk / Math.PI);
+      player.update(dt, input());
+      // Footsteps at each half stride; a thud and a dip on landing
+      if (player.onGround && Math.floor(player.walk / Math.PI) !== stride) sounds.step(keys.has('ShiftLeft'));
+      if (player.landed > 4) {
+        sounds.land(player.landed);
+        dip = Math.min(0.25, player.landed * 0.02);
+      }
+      const t = TOOLS[tool];
+      if ((wantFire || (held && t.auto)) && cooldown <= 0) {
+        useTool();
+        cooldown = t.cooldown;
+      }
     }
     wantFire = false;
   }
@@ -1390,6 +1626,7 @@ function tick(now: number): void {
   let steps = 0;
   const t0 = performance.now();
   while (accumulator >= 1 / 60 && steps < 2) {
+    if (car) driveStep(1 / 60);
     physics.step();
     accumulator -= 1 / 60;
     steps++;
@@ -1398,9 +1635,18 @@ function tick(now: number): void {
   if (steps) stepMs += ((performance.now() - t0) / steps - stepMs) * 0.1;
   if (++frames % 6 === 0) void readDebris();
 
-  // Camera: the player's eye, shaken by blasts
-  player.eye(eye);
-  player.look(dir);
+  // Camera: the player's eye (or behind the car), shaken by blasts
+  if (car) {
+    car.draw(Math.min(1, accumulator * 60));
+    if (driving) player.position.set(car.position.x, car.position.y, 0);
+  }
+  if (driving && car) chaseView(dt);
+  else {
+    player.eye(eye);
+    player.look(dir);
+  }
+  aimFrom.copy(eye);
+  aimDir.copy(dir);
   const cam = view.camera;
   // Shake as trauma: it eases off, and the view moves by its square (a knock barely stirs it, a
   // blast next to you throws it about), wandering smoothly rather than jittering
@@ -1411,7 +1657,8 @@ function tick(now: number): void {
   dip *= Math.exp(-dt * 10);
   cam.position.copy(eye).add(new THREE.Vector3(wander(1) * trauma * 0.09, wander(2) * trauma * 0.09, wander(3) * trauma * 0.09 - dip));
   const sprinting = playing && keys.has('ShiftLeft') && Math.hypot(player.velocity.x, player.velocity.y) > 6;
-  const fov = aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
+  const carSpeed = driving && car ? Math.abs(car.speed) : 0;
+  const fov = driving ? settings.fov + Math.min(16, carSpeed * 0.18) + (keys.has('ShiftLeft') && boostLeft > 0 ? 5 : 0) : aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
   if (Math.abs(cam.fov - fov) > 0.05) {
     cam.fov += (fov - cam.fov) * Math.min(1, dt * 8);
     cam.updateProjectionMatrix();
@@ -1432,12 +1679,14 @@ function tick(now: number): void {
   // In focus: everything up to the far side of the block being destroyed (or what's aimed at,
   // if that's further); the city beyond softening gradually. Aiming down the sights focuses on
   // what's under the crosshair, the rest behind it going soft sooner.
-  const block = Math.hypot(eye.x - BLOCK_CENTRE.x, eye.y - BLOCK_CENTRE.y) + BLOCK_REACH;
+  // (At the track: what's within reach of the player, wherever that is)
+  const block = (SCENE === 'track' ? 0 : Math.hypot(eye.x - BLOCK_CENTRE.x, eye.y - BLOCK_CENTRE.y)) + BLOCK_REACH;
   view.setFocus(aiming ? focusAt + 2 : Math.max(block, Math.min(focusAt, 80)), aiming ? 25 : 90, dofAmount);
   const pace = Math.hypot(player.velocity.x, player.velocity.y);
   hand.update(dt, player.walk, player.onGround ? Math.min(1, pace / 9) : 0, sprinting);
   view.glow = Math.max(0.35, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value - dt * 1.5);
-  const aim = raycast(city, eye.toArray(), dir.toArray(), TOOLS[tool].reach || 3);
+  const aim = raycast(city, eye.toArray(), dir.toArray(), driving ? CANNON.reach : TOOLS[tool].reach || 3);
+  if (driving && car) hud.speed(car.speed * 3.6, boostLeft);
   hud.aim(!!aim && aim.voxel >= 0);
   dustiness *= Math.exp(-sim / 25);
   view.dust = dustiness;
@@ -1482,6 +1731,11 @@ Object.assign(window, {
     get physics() {
       return physics;
     },
+    /** The race car (the track), and getting in or out. */
+    get car() {
+      return car;
+    },
+    drive: (on: boolean) => setDriving(on),
     get world() {
       return city;
     },
