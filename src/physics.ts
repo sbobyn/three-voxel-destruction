@@ -98,7 +98,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (dist > blast.centre.w) { return; }
   // Falls off with distance; lighter pieces fly further
   let f = (1.0 - dist / blast.centre.w) / sqrt(max(bodies[base + ${B_SIZE / 4}u].w, 0.2));
-  let dir = normalize(d + vec3f(0.0, 0.0, 0.25 * blast.centre.w) + vec3f(1e-4));
+  // Outwards, a little up (none in orbit, where there's no lift either: nothing to throw it up against)
+  let up = select(0.0, 0.25, blast.push.y > 0.0);
+  let dir = normalize(d + vec3f(0.0, 0.0, up * blast.centre.w) + vec3f(1e-4));
   // Raised to the blast's throw along it, not added to: blasts that overlap (charges going off
   // together) don't stack, and debris already flying faster keeps its speed
   var v = bodies[base + ${B_VEL / 4}u];
@@ -168,7 +170,8 @@ export class CityPhysics {
     this.bodyBuffer = bodyBuffer;
     this.rest = new Float32Array(city.count * 7);
     const ref = new Solver();
-    new Rigid(ref, [4000, 4000, 20], 0, 0.8, [0, 0, -10]);
+    // The ground (body 0): in orbit there's none, so it waits far off, out of everything's way
+    new Rigid(ref, [4000, 4000, 20], 0, 0.8, city.weightless ? [0, 0, -60000] : [0, 0, -10]);
     for (let v = 0; v < city.count; v++) new Rigid(ref, CUBE, 0, 0.7, city.position.subarray(3 * v, 3 * v + 3));
     // Spares wait parked, fixed
     for (let k = 0; k < SPARE + PROXIES; k++) new Rigid(ref, CUBE, 0, 0.7, parked(city.count + k));
@@ -177,7 +180,7 @@ export class CityPhysics {
       bodyCapacity: ref.bodies.length,
       capacity: { pairs: 8 * 65536, manifolds: 8 * 65536, contacts: 24 * 65536, colors: 32, joints: 2 * 65536 },
     });
-    Object.assign(this.solver.params, gpuParams3D(), { dt: 1 / 60, iterations: 6, gravity: -9.81, up: REF_UP });
+    Object.assign(this.solver.params, gpuParams3D(), { dt: 1 / 60, iterations: 6, gravity: city.weightless ? 0 : -9.81, up: REF_UP });
     this.body = new Int32Array(city.count);
     this.voxelOf = new Int32Array(ref.bodies.length).fill(-1);
     for (let v = 0; v < city.count; v++) {
@@ -623,7 +626,7 @@ export class CityPhysics {
   }
 
   /** Push loose bodies within `radius` of `at` outward (m/s at the centre), up and spinning. */
-  blast(at: ArrayLike<number>, radius: number, push: number, lift = push * 0.4, spin = 6): void {
+  blast(at: ArrayLike<number>, radius: number, push: number, lift = this.city.weightless ? 0 : push * 0.4, spin = 6): void {
     this.wake(at, radius);
     this.device.queue.writeBuffer(this.blastParams, 0, new Float32Array([at[0], at[1], at[2], radius, push, lift, spin, this.solver.bodyCount]));
     const encoder = this.device.createCommandEncoder();

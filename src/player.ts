@@ -84,6 +84,9 @@ export class Player {
     return out.set(Math.cos(this.pitch) * Math.cos(this.yaw), Math.cos(this.pitch) * Math.sin(this.yaw), Math.sin(this.pitch));
   }
 
+  /** In orbit: always flying, gliding, no ground to stop at. */
+  zeroG = false;
+
   update(dt: number, input: Input): void {
     const fwd = new THREE.Vector2(Math.cos(this.yaw), Math.sin(this.yaw));
     const right = new THREE.Vector2(Math.sin(this.yaw), -Math.cos(this.yaw));
@@ -99,10 +102,11 @@ export class Player {
         .add(new THREE.Vector3(0, 0, input.rise));
       if (target.lengthSq() > 1) target.normalize();
       target.multiplyScalar(speed);
-      // Critically damped: responsive, no drift once the keys are up
-      this.velocity.lerp(target, 1 - Math.exp(-dt / FLY_RESPONSE));
+      // Critically damped: responsive, no drift once the keys are up. In orbit, slow to
+      // answer and slow to stop: thrusters against your own momentum, a glide
+      this.velocity.lerp(target, 1 - Math.exp(-dt / (this.zeroG ? 0.9 : FLY_RESPONSE)));
       this.position.addScaledVector(this.velocity, dt);
-      if (this.position.z < 0.1) {
+      if (!this.zeroG && this.position.z < 0.1) {
         this.position.z = 0.1;
         this.velocity.z = Math.max(0, this.velocity.z);
       }

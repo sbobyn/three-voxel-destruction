@@ -334,6 +334,13 @@ export class Particles {
   private readonly dt = uniform(0);
   private readonly time = uniform(0);
   private readonly wind = uniform(new THREE.Vector3());
+  /**
+   * Earth's pull on the particles (1) or none (0, in orbit): sparks falling, dust settling, hot
+   * smoke rising. And the air (1) or none (0): its drag and swirl; in vacuum a puff flies on
+   * as it was thrown.
+   */
+  readonly gravity = uniform(1);
+  readonly air = uniform(1);
   private readonly sun = uniform(new THREE.Vector3(0, 0, 1));
   private readonly ground = uniform(0);
   private readonly spawnBase = uniform(0, 'uint');
@@ -407,9 +414,12 @@ export class Particles {
       const d = this.dustTint;
       this.queue([Burst.DustRing, r, 5 * speed, life, d.r, d.g, d.b, 0.8, x, y, this.groundHeight, s], [x, y, this.groundHeight], Math.round(13 * f * Math.max(0.3, 1 - height / (r * 1.5))));
     }
-    // Smoke the colour of the dust it's full of (a building's, not an oil fire's soot)
-    this.queue([Burst.Smoke, r, 3.5 * speed, life, 0.4, 0.38, 0.35, 0.85, x, y, z, s], [x, y, z], Math.round(14 * f));
-    this.queue([Burst.Fireball, r, 7 * speed, life, 0.3, 0.29, 0.27, 0.9, x, y, z, s], [x, y, z], Math.round(16 * f));
+    // Smoke the colour of the dust it's full of (a building's, not an oil fire's soot). In
+    // vacuum there's no air to hold it: a flash, and a thin cloud racing out and gone
+    const vacuum = this.air.value === 0;
+    const [held, thick] = vacuum ? [0.3, 0.3] : [1, 1];
+    this.queue([Burst.Smoke, r, 3.5 * speed * (vacuum ? 2 : 1), life * held, 0.4, 0.38, 0.35, 0.85 * thick, x, y, z, s], [x, y, z], Math.round(14 * f * (vacuum ? 0.5 : 1)));
+    this.queue([Burst.Fireball, r, 7 * speed, life * (vacuum ? 0.25 : 1), 0.3, 0.29, 0.27, 0.9 * thick, x, y, z, s], [x, y, z], Math.round(16 * f));
     this.queue([Burst.Sparks, r, 13 * speed, 1, 1, 1, 1, 0.9, x, y, z, 1], [x, y, z], Math.round(30 * f));
     this.fires.push({ at: new THREE.Vector3(x, y, z), t0: this.clock, radius: r, until: this.clock + 1.2 * Math.sqrt(r) });
   }
@@ -872,8 +882,8 @@ export class Particles {
         kind.equal(Kind.Spark),
         float(-9.8),
         select(kind.equal(Kind.Dust), float(-0.18), min(temp.sub(300).mul(select(kind.equal(Kind.Fire), float(0.0025), float(0.0012))), 5).add(0.1)),
-      );
-      const relax = float(1).sub(exp(drag(k).negate().mul(dt)));
+      ).mul(this.gravity);
+      const relax = float(1).sub(exp(drag(k).negate().mul(dt))).mul(this.air);
       vel.addAssign(flow.sub(vel).mul(relax));
       vel.z.addAssign(lift.mul(dt));
       pos.addAssign(vel.mul(dt));

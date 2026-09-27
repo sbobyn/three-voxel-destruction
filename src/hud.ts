@@ -344,7 +344,9 @@ export class Hud {
 
     this.menu.className = 'menu';
     // Which scene, and links to each (the page's other parameters kept)
-    const track = new URLSearchParams(location.search).get('scene') === 'track';
+    const scene = new URLSearchParams(location.search).get('scene');
+    const track = scene === 'track';
+    const space = scene === 'space';
     const link = (scene: string | null) => {
       const q = new URLSearchParams(location.search);
       if (scene) q.set('scene', scene);
@@ -353,13 +355,15 @@ export class Hud {
       return text ? `?${text}` : location.pathname;
     };
     this.menu.innerHTML = `<div class="card">
-      <h1>${track ? 'Voxel Circuit' : 'Voxel City'}</h1>
+      <h1>${track ? 'Voxel Circuit' : space ? 'Voxel Orbit' : 'Voxel City'}</h1>
       <p>${
         track
-          ? 'A race car on a circuit where every wall, stand and tyre is voxels in the AVBD solver, on your GPU. Drive through them, open up the rear cannons, or get out and take the place apart on foot.'
-          : "Every one of the city's voxels is a body in the AVBD solver, running on your GPU. Knock a hole in a tower and whatever it held up comes down."
+          ? 'A race car on a circuit where every wall, stand and tyre is voxels in the AVBD solver, on your GPU. Drive through them, open up the machine guns and rockets, or get out and take the place apart on foot.'
+          : space
+            ? 'A space station in orbit, every truss, module and solar wing voxels in the AVBD solver, on your GPU, with no gravity. Cut a wing loose and it drifts off; blow a module apart and it scatters into the dark.'
+            : "Every one of the city's voxels is a body in the AVBD solver, running on your GPU. Knock a hole in a tower and whatever it held up comes down."
       }</p>
-      <div class="scenes"><a href="${link(null)}" class="${track ? '' : 'on'}">City</a><a href="${link('track')}" class="${track ? 'on' : ''}">Race track</a></div>
+      <div class="scenes"><a href="${link(null)}" class="${track || space ? '' : 'on'}">City</a><a href="${link('track')}" class="${track ? 'on' : ''}">Race track</a><a href="${link('space')}" class="${space ? 'on' : ''}">Space station</a></div>
       <div class="grid tap">
         <b>Left thumb</b><span>move · push past the ring to sprint</span>
         <b>Right thumb</b><span>drag anywhere to look</span>
@@ -374,7 +378,7 @@ export class Hud {
         <b>Tools</b><span>scroll to switch, or hold Tab for the tool wheel</span>
         <b>F</b><span>fly or walk (walking: Space jump, C crouch, Shift sprint)</span>
         <b>X</b><span>slow motion (the player moves at full speed: fly round a collapse)</span>
-        <b>T · R</b><span>time of day · rebuild the ${track ? 'track' : 'city'}</span>
+        <b>T · R</b><span>${space ? 'turn the sun' : 'time of day'} · rebuild the ${track ? 'track' : space ? 'station' : 'city'}</span>
         ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · Shift boost · left button: the machine guns · right button: the rockets · F gets out (and back in)</span>' : ''}
       </div>
       <div class="row"><span>Look sensitivity</span><input type="range" name="sensitivity" min="0.2" max="3" step="0.05"></div>

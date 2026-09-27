@@ -15,6 +15,8 @@ import { Impacts } from './impacts.ts';
 import { skyline } from './skyline.ts';
 import { Particles } from './particles.ts';
 import { CitySky } from './sky.ts';
+import { SpaceSky } from './space.ts';
+import { buildStation, HUB } from './station.ts';
 import { buzz, preventZoom, TouchControls, wantsTouch } from './touch.ts';
 import { Structure } from './structure.ts';
 import { ViewModel } from './viewmodel.ts';
@@ -59,12 +61,13 @@ interface Effects {
 }
 const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, update() {} };
 
-/** Which world: the city block (the default) or the race track (?scene=track). */
-const SCENE: 'city' | 'track' = new URLSearchParams(location.search).get('scene') === 'track' ? 'track' : 'city';
-if (SCENE === 'track') {
-  document.title = 'Voxel Circuit';
+/** Which world: the city block (the default), the race track (?scene=track) or the space station (?scene=space). */
+const SCENE: 'city' | 'track' | 'space' = (['track', 'space'] as const).find((s) => s === new URLSearchParams(location.search).get('scene')) ?? 'city';
+if (SCENE !== 'city') {
+  const name = SCENE === 'track' ? 'Voxel Circuit' : 'Voxel Orbit';
+  document.title = name;
   const title = document.querySelector('#loader h1');
-  if (title) title.textContent = 'Voxel Circuit';
+  if (title) title.textContent = name;
 }
 /** The track's middle line (the track scene). */
 let line: TrackLine | null = null;
@@ -80,6 +83,7 @@ const chase = { yaw: 0, orbit: 0, lift: 0, idle: 0, kick: 0 };
 /** Build the scene's world (and, at the track, its line). */
 function buildWorld(): City {
   if (SCENE === 'city') return buildCity();
+  if (SCENE === 'space') return buildStation();
   const built = buildTrack();
   line = built.line;
   return built.city;
@@ -132,7 +136,7 @@ function applySettings(): void {
   view.camera.fov = settings.fov;
   view.camera.updateProjectionMatrix();
   sounds.setVolume(settings.volume);
-  view.sunRays.value = settings.sunRays ? 1 : 0;
+  view.sunRays.value = settings.sunRays && SCENE !== 'space' ? 1 : 0;
   // Auto: the device's own quality and resolution (before it is measured, the default)
   const auto = settings.graphics === 'auto';
   if (!auto) settings.quality = settings.graphics as Quality;
@@ -241,6 +245,10 @@ addEventListener('mousemove', (e) => {
 const look = { x: 0, y: 0, sx: 0, sy: 0 };
 /** F: into the car or out of it (at the track, near it), else flying or walking. */
 function pressF(): void {
+  if (SCENE === 'space') {
+    hud.toast('No walking in orbit');
+    return;
+  }
   if (car && (driving || player.position.distanceTo(car.position) < GET_IN)) setDriving(!driving);
   else toggleFly();
 }
@@ -485,6 +493,15 @@ const concreteDust = new THREE.Color(0.62, 0.6, 0.56);
 /** Start on the pavement off the tower's rounded corner, looking up at it: the shopfront and the blade sign in view, the tower rising overhead. */
 function spawn(): void {
   player.velocity.set(0, 0, 0);
+  if (SCENE === 'space') {
+    // Floating off the station's corner, the truss and its wings across the view, the Earth below
+    player.zeroG = true;
+    player.flying = true;
+    player.position.set(HUB[0] - 34, HUB[1] - 30, HUB[2] + 3);
+    player.yaw = Math.atan2(HUB[1] - player.position.y, HUB[0] - player.position.x);
+    player.pitch = -0.2;
+    return;
+  }
   if (SCENE === 'track' && line) {
     // On the grid behind the start line, looking down the main straight at the wall across it
     const { position, heading } = gridSlot(line);
@@ -501,7 +518,7 @@ function spawn(): void {
 /** The stages of starting up, as the loading bar shows them (weights: their share of the bar). */
 const loader = new Loader([
   { name: 'Starting the GPU and loading materials', weight: 4 },
-  { name: SCENE === 'track' ? 'Building the track' : 'Building the building', weight: 2 },
+  { name: SCENE === 'track' ? 'Building the track' : SCENE === 'space' ? 'Building the station' : 'Building the building', weight: 2 },
   { name: 'Starting the physics', weight: 2 },
   { name: 'Lighting the sky', weight: 1 },
   { name: 'Compiling shaders', weight: 3 },
@@ -531,11 +548,21 @@ async function start(): Promise<void> {
     (view.scene.fog as THREE.FogExp2).density = 0.0011;
     const extent = 240;
     view.setTrack(trackField(line, 1024, extent), 1024, extent, TRACK_WIDTH, KERB, RUNOFF, line.points[2 * line.start], [-160, -82, -95, -60]);
-  } else {
+  } else if (SCENE === 'space') view.setSpace();
+  else {
     view.setStreets(city);
     view.scene.add(skyline(city));
   }
   effects = startEffects();
+  if (SCENE === 'space') {
+    // Vacuum: chips and smoke fly on as thrown, nothing falls, nothing to land on
+    chips.vacuum = shards.vacuum = true;
+    if (smoke) {
+      smoke.gravity.value = 0;
+      smoke.air.value = 0;
+      smoke.groundHeight = -1e5;
+    }
+  }
   spawn();
   if (SCENE === 'track' && line) {
     car = new Car();
@@ -896,7 +923,7 @@ function startEffects(): Effects {
   view.smokeScene.add(particles.object);
   view.scene.add(particles.flash);
   smoke = particles;
-  const wind = new THREE.Vector3(1.6, 0.8, 0);
+  const wind = SCENE === 'space' ? new THREE.Vector3() : new THREE.Vector3(1.6, 0.8, 0);
   const sun = new THREE.Color();
   return {
     explosion: (at, radius) => {
@@ -919,7 +946,17 @@ function startEffects(): Effects {
 }
 
 // The sky: its sun lights the city, its horizon colours the fog, and its colours the reflections
-let sky: CitySky;
+/** What the frame needs of the sky: the city's (sky.ts) or orbit's (space.ts). */
+interface Sky {
+  readonly object: THREE.Object3D;
+  readonly sun: THREE.Vector3;
+  readonly horizon: THREE.Color;
+  readonly sunColor: THREE.Color;
+  sunIntensity(): number;
+  update(camera: THREE.Camera, time: number): void;
+  setQuality(quality: Settings['quality']): void;
+}
+let sky: Sky;
 /**
  * The smoke and dust, and the quality it's drawn at: the setting's, a step lower while a
  * thick cloud slows frames. The smoke has its own reduced-resolution pass and a budget of
@@ -987,6 +1024,18 @@ let sunStrength = 3;
 function setSun(hour: number): void {
   if (!sky || Math.abs(hour - sunHour) < 1e-3) return;
   sunHour = hour;
+  if (SCENE === 'space') {
+    // In orbit the "time" turns the sun round the station, 35 degrees up (the Earth below lit)
+    const azimuth = (hour / 24) * Math.PI * 2 + 2.2;
+    const elevation = 0.6;
+    view.sunDirection.set(Math.cos(elevation) * Math.cos(azimuth), Math.cos(elevation) * Math.sin(azimuth), Math.sin(elevation)).normalize();
+    sky.sun.copy(view.sunDirection);
+    sky.update(view.camera, performance.now() / 1000);
+    sunStrength = sky.sunIntensity();
+    view.renderer.toneMappingExposure = 1;
+    view.setSpace();
+    return;
+  }
   const day = (hour - 6.3) / 12.8;
   const azimuth = Math.PI * (0.15 - day * 1.1);
   const preset = SKIES.reduce((best, s) => (Math.abs(s.hour - hour) < Math.abs(best.hour - hour) ? s : best));
@@ -1020,7 +1069,7 @@ async function startSky(): Promise<void> {
   skyIndex = await fetch('hdri/index.json')
     .then((r) => (r.ok ? (r.json() as Promise<Record<string, SkyInfo>>) : null))
     .catch(() => null);
-  sky = new CitySky(view.sunDirection);
+  sky = SCENE === 'space' ? new SpaceSky(new THREE.Vector3(...HUB)) : new CitySky(view.sunDirection);
   view.scene.add(sky.object);
   sky.update(view.camera, 0);
   setSun(settings.hour);
@@ -1143,7 +1192,7 @@ const dir = new THREE.Vector3();
 let shake = 0;
 /** The block being destroyed (its middle, m) and how far out from it stays in focus (m). */
 const BLOCK_CENTRE = new THREE.Vector2(0, 0);
-const BLOCK_REACH = SCENE === 'track' ? 150 : 22;
+const BLOCK_REACH = SCENE === 'track' ? 150 : SCENE === 'space' ? 120 : 22;
 /** Depth of field: the distance wanted in focus, the eased one, and the bokeh's size (eased). */
 let focusWant = 30;
 let focusAt = 30;
@@ -1348,7 +1397,7 @@ function planBall(from: THREE.Vector3, v: THREE.Vector3, r: number): void {
   const now = simTime;
   const dt = 1 / 120;
   for (let t = 0; t < 4 && vel.length() > 10; t += dt) {
-    vel.z -= 9.81 * dt;
+    if (!city.weightless) vel.z -= 9.81 * dt;
     const step = vel.clone().multiplyScalar(dt);
     const hit = raycast(city, p.toArray(), step.clone().normalize().toArray(), step.length() + r);
     p.add(step);
@@ -1469,6 +1518,8 @@ const CRUSH_DAMAGE = 2500;
 let looseCap = 8000;
 let damage = new Map<number, number>();
 const crushes: { voxel: number; speed: number }[] = [];
+/** In orbit, debris farther than this (m) from the station is let go of. */
+const DRIFT_OFF = 150;
 /** Debris slower than this (m/s) for this long (s) comes to rest. */
 const REST_SPEED = 0.25;
 const REST_SECONDS = 1.5;
@@ -1515,7 +1566,8 @@ async function readDebris(): Promise<void> {
       if (speed < 1 && stillFor[v] > 1) still.push(px, py, pz);
       // At rest a while: frozen where it lies (so a settled heap costs nothing)
       stillFor[v] = speed < REST_SPEED ? stillFor[v] + since : 0;
-      if (stillFor[v] > REST_SECONDS && resting.length < 4000) {
+      // (In orbit nothing comes to rest on anything: it drifts on, until it's far enough to let go of)
+      if (!city.weightless && stillFor[v] > REST_SECONDS && resting.length < 4000) {
         resting.push(v);
         poses.push(px, py, pz, data[o + 8], data[o + 9], data[o + 10], data[o + 11]);
       }
@@ -1534,7 +1586,7 @@ async function readDebris(): Promise<void> {
         }
       }
       // Debris coming down hard near the ground kicks up dust (a few puffs a readback, one per voxel a while)
-      if (speed > 6 && pz < 2.5 && puffs < 40 && now - lastImpact[v] > 3) {
+      if (!city.weightless && speed > 6 && pz < 2.5 && puffs < 40 && now - lastImpact[v] > 3) {
         lastImpact[v] = now;
         puffs++;
         effects.impact([px, py, Math.max(0.2, pz - 0.4)], speed, dustTint[city.material[v]] ?? concreteDust);
@@ -1553,7 +1605,7 @@ async function readDebris(): Promise<void> {
         .map((v, k) => ({ v, d: (data[12 * k] - x) ** 2 + (data[12 * k + 1] - y) ** 2, k }))
         .filter(({ k, v }) => data[12 * k + 2] > PARKED_BELOW && city.state[v] === 1)
         .sort((a, b) => b.d - a.d);
-      const settleNow = candidates
+      const settleNow = (city.weightless ? [] : candidates)
         .filter(({ k }) => data[12 * k + 2] < 2.5 && Math.hypot(data[12 * k + 4], data[12 * k + 5], data[12 * k + 6]) < 1.5)
         .slice(0, physics.loose - looseCap);
       if (settleNow.length) {
@@ -1571,6 +1623,11 @@ async function readDebris(): Promise<void> {
       chips.burst(gone.slice(0, 400), [x, y, 0], 1, 2);
       if (gone.length) physics.remove(gone);
       unsettled = true;
+    }
+    // In orbit, what's drifted far off goes (it's not coming back)
+    if (city.weightless) {
+      const far = voxels.filter((v, k) => city.state[v] === 1 && Math.hypot(data[12 * k] - HUB[0], data[12 * k + 1] - HUB[1], data[12 * k + 2] - HUB[2]) > DRIFT_OFF);
+      if (far.length) physics.remove(far);
     }
     // Rubble at rest near the player is solid to them too
     for (const v of physics.rubble) {
@@ -1596,9 +1653,11 @@ async function readDebris(): Promise<void> {
       section.pose = pose;
       // It breaks only where breaking holds: hitting the ground or a floor still standing
       // (sections knocking each other in the air, stacked as they fall, stay whole), or at rest
-      const resting = age > 1 && speed < 0.5;
+      // (In orbit a piece never rests: it drifts, whole, until it hits something)
+      const resting = !city.weightless && age > 1 && speed < 0.5;
       let hit = false;
       if (age > 0.2 && jolt > SECTION_JOLT) {
+        if (city.weightless) hit = true;
         const low = physics.underside(slot, pose, 16);
         for (let i = 0; !hit && i < low.length; i += 3) hit = low[i + 2] < 1.2 || voxelAt(city, low[i], low[i + 1], low[i + 2] - 0.3) >= 0;
       }
@@ -1619,7 +1678,8 @@ async function readDebris(): Promise<void> {
         high = true;
         for (let i = 0; high && i < low.length; i += 3) if (low[i + 2] < 2 || voxelAt(city, low[i], low[i + 1], low[i + 2] - 0.3) >= 0) high = false;
       }
-      const share = hit ? Math.min(0.12, 0.03 + jolt / 100) : high ? 0.3 : 0.02;
+      // (In orbit it all flies apart: nothing to lay rubble down on)
+      const share = city.weightless ? 1 : hit ? Math.min(0.12, 0.03 + jolt / 100) : high ? 0.3 : 0.02;
       const low = physics.shatter(slot, pose, vel, share);
       unsettled = true;
       const at = new THREE.Vector3(pose[0], pose[1], pose[2]);
@@ -1660,7 +1720,7 @@ async function readDebris(): Promise<void> {
     // Rubble whose support went (a floor fell away under a heap) falls again
     if (unsettled) settleUntil = now + SETTLE_WATCH;
     unsettled = false;
-    if ((now < settleUntil && now - lastSettle > 0.3) || now - lastSettle > 3) {
+    if (!city.weightless && ((now < settleUntil && now - lastSettle > 0.3) || now - lastSettle > 3)) {
       lastSettle = now;
       physics.settle(still);
     }
@@ -1789,7 +1849,8 @@ function tick(now: number): void {
     focusWant = f ? Math.max(1.5, f.t) : 600;
   }
   focusAt += (focusWant - focusAt) * Math.min(1, dt * 5);
-  const dofOn = settings.dof && view.quality === 'high';
+  // (Not in orbit: the stars and the Earth are as sharp as the station)
+  const dofOn = settings.dof && view.quality === 'high' && SCENE !== 'space';
   // (In the car the right button fires rockets: no zoom)
   const zoomed = aiming && !driving;
   dofAmount += ((dofOn ? (zoomed ? 12 : 8) : 0) - dofAmount) * Math.min(1, dt * 6);
@@ -1797,7 +1858,7 @@ function tick(now: number): void {
   // if that's further); the city beyond softening gradually. Aiming down the sights focuses on
   // what's under the crosshair, the rest behind it going soft sooner.
   // (At the track: what's within reach of the player, wherever that is)
-  const block = (SCENE === 'track' ? 0 : Math.hypot(eye.x - BLOCK_CENTRE.x, eye.y - BLOCK_CENTRE.y)) + BLOCK_REACH;
+  const block = (SCENE === 'city' ? Math.hypot(eye.x - BLOCK_CENTRE.x, eye.y - BLOCK_CENTRE.y) : 0) + BLOCK_REACH;
   view.setFocus(zoomed ? focusAt + 2 : Math.max(block, Math.min(focusAt, 80)), zoomed ? 25 : 90, dofAmount);
   const pace = Math.hypot(player.velocity.x, player.velocity.y);
   hand.update(dt, player.walk, player.onGround ? Math.min(1, pace / 9) : 0, sprinting);

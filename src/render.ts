@@ -265,7 +265,8 @@ export class CityRenderer {
     this.scene.fog = new THREE.FogExp2(0xc9d6e2, 0.0022);
     this.smokeScene.fog = this.scene.fog;
     this.renderer.setClearColor(0x000000, 0);
-    this.scene.add(this.ground());
+    this.groundMesh = this.ground();
+    this.scene.add(this.groundMesh);
 
     this.post = new THREE.RenderPipeline(this.renderer);
     const scene = pass(this.scene, this.camera, { samples: 0 });
@@ -416,7 +417,8 @@ export class CityRenderer {
    * so light cuts through the dust of a collapse.
    */
   set dust(amount: number) {
-    this.rays.density.value = RAYS_CLEAR + (RAYS_DUSTY - RAYS_CLEAR) * Math.min(1, amount);
+    // (In vacuum there's no air for the light to show in)
+    this.rays.density.value = this.vacuum ? 0 : RAYS_CLEAR + (RAYS_DUSTY - RAYS_CLEAR) * Math.min(1, amount);
   }
 
   /** Bloom strength (0.35 normally). */
@@ -784,6 +786,36 @@ export class CityRenderer {
     return mesh;
   }
   private groundMaterial: THREE.MeshStandardNodeMaterial | null = null;
+  private groundMesh!: THREE.Mesh;
+  /** In orbit (setSpace): no air for sun shafts. */
+  private vacuum = false;
+
+  /**
+   * In orbit: no ground and no air (no fog), and the light off the sky black above and the
+   * Earth's blue below; reflections likewise, with the sun's glint.
+   */
+  setSpace(): void {
+    this.vacuum = true;
+    this.rays.density.value = 0;
+    this.groundMesh.visible = false;
+    (this.scene.fog as THREE.FogExp2).density = 0;
+    this.hemi.color.setRGB(0.01, 0.012, 0.02);
+    this.hemi.groundColor.setRGB(0.22, 0.36, 0.62);
+    this.hemi.intensity = 0.55;
+    const env = new THREE.Scene();
+    const dome = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide });
+    const dir = normalize(positionLocal);
+    const toSun = dir.dot(vec3(this.sunDirection.x, this.sunDirection.y, this.sunDirection.z)).max(0);
+    const earth = vec3(0.1, 0.18, 0.32).mul(smoothstep(-0.05, -0.45, dir.z));
+    dome.colorNode = earth.add(vec3(1, 0.97, 0.92).mul(toSun.pow(300).mul(40))) as unknown as THREE.Node<'color'>;
+    env.add(new THREE.Mesh(new THREE.SphereGeometry(10, 64, 32), dome));
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const target = pmrem.fromScene(env, 0.01);
+    this.scene.environment?.dispose();
+    this.scene.environment = target.texture;
+    this.scene.environmentIntensity = 0.6;
+    pmrem.dispose();
+  }
 
   /** Draw the city's street grid on the ground. */
   setStreets(city: City): void {

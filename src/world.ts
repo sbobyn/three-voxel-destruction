@@ -60,6 +60,13 @@ export interface City {
   /** Windows: their glass, centre (m) and the way they face (unit, horizontal). */
   panes: Pane[];
   buildings: Building[];
+  /**
+   * Per voxel, 1 where it holds its object in place (structure.ts floods from these): the
+   * ground layer when absent. The space station's parts are held where they join the rest.
+   */
+  anchor?: Uint8Array;
+  /** Nothing weighs anything (in orbit): no storey is ever overloaded. */
+  weightless?: boolean;
   /** The street grid (render.ts draws it): block pitch and street width (m), blocks a side. */
   pitch: number;
   street: number;
@@ -113,14 +120,17 @@ type Put = (x: number, y: number, z: number, m: Mat, colour?: number) => void;
 /** Builds a world object by object (buildCity, and the other scenes): `finish` makes the City. */
 export interface WorldBuilder {
   rnd: () => number;
-  /** An object of w × d × h voxels with its min corner at voxel (x0, y0, 0); `fill` puts its voxels. */
-  place(x0: number, y0: number, w: number, d: number, h: number, fill: (put: Put) => void): void;
+  /**
+   * An object of w × d × h voxels with its min corner at voxel (x0, y0, 0); `fill` puts its
+   * voxels. `anchor(x, y, z)`: the cells that hold it in place (default: those on the ground).
+   */
+  place(x0: number, y0: number, w: number, d: number, h: number, fill: (put: Put) => void, anchor?: (x: number, y: number, z: number) => boolean): void;
   /** A block of voxels, x0..x1 × y0..y1 × z0..z1 (ends excluded). */
   box(put: Put, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, m: Mat, colour?: number): void;
   /** The object placed last. */
   last(): Building;
   /** The world: what's been placed, its faces and windows, and the street grid the ground draws. */
-  finish(grid: { pitch: number; street: number; blocks: number }): City;
+  finish(grid: { pitch: number; street: number; blocks: number; weightless?: boolean }): City;
 }
 
 export function worldBuilder(seed: number): WorldBuilder {
@@ -131,9 +141,12 @@ export function worldBuilder(seed: number): WorldBuilder {
   const cellOf: number[] = [];
   const col: number[] = [];
   const buildings: Building[] = [];
+  /** Voxels placed with an anchor test of their own, and which of them hold (the rest: the ground layer). */
+  const held = new Map<number, boolean>();
+  let anchored = false;
 
   /** An object of w × d × h voxels with its min corner at voxel (x0, y0, 0). */
-  const place = (x0: number, y0: number, w: number, d: number, h: number, fill: (put: Put) => void) => {
+  const place = (x0: number, y0: number, w: number, d: number, h: number, fill: (put: Put) => void, anchor?: (x: number, y: number, z: number) => boolean) => {
     const b: Building = { x0, y0, w, d, h, cells: new Int32Array(w * d * h).fill(-1) };
     const id = buildings.length;
     buildings.push(b);
@@ -157,18 +170,20 @@ export function worldBuilder(seed: number): WorldBuilder {
       cellOf.push(c);
       col.push(colour ?? tint(m));
     });
-    dropFloating(b, first);
+    if (anchor) anchored = true;
+    dropFloating(b, first, anchor);
   };
 
   /**
    * Leave out voxels of the object just placed (from voxel `first` on) not joined to the
    * ground through its others: nothing starts out hanging in the air.
    */
-  const dropFloating = (b: Building, first: number) => {
+  const dropFloating = (b: Building, first: number, anchor?: (x: number, y: number, z: number) => boolean) => {
     const layer = b.w * b.d;
     const reached = new Uint8Array(b.cells.length);
     const queue: number[] = [];
-    for (let c = 0; c < layer; c++) if (b.cells[c] >= 0) (reached[c] = 1), queue.push(c);
+    const holds = (c: number) => (anchor ? anchor(c % b.w, Math.floor(c / b.w) % b.d, Math.floor(c / layer)) : c < layer);
+    for (let c = 0; c < b.cells.length; c++) if (b.cells[c] >= 0 && holds(c)) (reached[c] = 1), queue.push(c);
     while (queue.length) {
       const c = queue.pop()!;
       const x = c % b.w;
@@ -187,7 +202,10 @@ export function worldBuilder(seed: number): WorldBuilder {
     // Keep the reached ones, in order, renumbered
     const keep: number[] = [];
     for (let v = first; v < pos.length / 3; v++) if (reached[cellOf[v]]) keep.push(v);
-    if (keep.length === pos.length / 3 - first) return;
+    const mark = () => {
+      if (anchor) for (let v = first; v < pos.length / 3; v++) held.set(v, holds(cellOf[v]));
+    };
+    if (keep.length === pos.length / 3 - first) return mark();
     for (let v = first; v < pos.length / 3; v++) b.cells[cellOf[v]] = -1;
     const lists = [pos, mat, bld, cellOf, col];
     const copies = lists.map((a) => a.slice());
@@ -200,12 +218,22 @@ export function worldBuilder(seed: number): WorldBuilder {
       cellOf.push(copies[3][v]);
       col.push(copies[4][v]);
     }
+    mark();
   };
   const box = (put: Put, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, m: Mat, colour?: number) => {
     for (let z = z0; z < z1; z++) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) put(x, y, z, m, colour);
   };
-  const finish = (grid: { pitch: number; street: number; blocks: number }): City => {
+  const finish = (grid: { pitch: number; street: number; blocks: number; weightless?: boolean }): City => {
     const count = pos.length / 3;
+    // Anchors: where given, else the ground layer (only kept when some object has its own)
+    let anchor: Uint8Array | undefined;
+    if (anchored) {
+      anchor = new Uint8Array(count);
+      for (let v = 0; v < count; v++) {
+        const b = buildings[bld[v]];
+        anchor[v] = (held.has(v) ? held.get(v) : cellOf[v] < b.w * b.d) ? 1 : 0;
+      }
+    }
     const exposed = new Uint8Array(count);
     for (let v = 0; v < count; v++) {
       const b = buildings[bld[v]];
@@ -268,6 +296,7 @@ export function worldBuilder(seed: number): WorldBuilder {
       pane,
       panes,
       buildings,
+      anchor,
       ...grid,
     };
   };
