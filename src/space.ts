@@ -6,7 +6,7 @@
 // thin blue atmosphere glowing round its limb.
 
 import * as THREE from 'three/webgpu';
-import { cameraPosition, clamp, dot, float, floor, fract, hash, length, max, mix, mx_noise_float, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { abs, cameraPosition, clamp, cross, dot, float, floor, fract, hash, length, max, mix, mx_noise_float, mx_worley_noise_float, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /** The Earth's radius (m, scaled), and how far under the station its top is. */
 export const EARTH_RADIUS = 5000;
@@ -105,22 +105,51 @@ export class SpaceSky {
     const far = length(positionWorld.sub(cameraPosition));
     const ground = bicubic(day, uv(), [4096, 2048]).rgb;
     const cover = bicubic(clouds, uv().add(vec2(this.clock.mul(0.0015), 0)), [2048, 1024]).r;
+    // The cloud's thickness at a point q (m): the cover map says how much sky is cloud there;
+    // what it's made of are heaps of rounded puffs, as cumulus seen from above: cells of
+    // domes (the distance to each cell's middle, rounded off) in two sizes, merging into
+    // banks where the cover is thick, over broad billows. Finer sizes fade with distance
+    // before they'd shimmer.
+    const fade = (from: number, to: number) => smoothstep(from, to, far);
+    const dome = (q: THREE.Node<'vec3'>, size: number) => {
+      const d = mx_worley_noise_float(q.xy.mul(1 / size)).div(0.8);
+      return float(1).sub(d.mul(d)).max(0).sqrt();
+    };
+    const billow = (q: THREE.Node<'vec3'>, size: number) => float(1).sub(abs(mx_noise_float(q.mul(1 / size))).mul(2));
+    const thickness = (q: THREE.Node<'vec3'>) =>
+      cover
+        .mul(1.5)
+        .add(billow(q, 480).mul(0.22))
+        // Puffs of different heights: the big ones swell and shrink across the field
+        // (At the Earth's scale here a metre is over a kilometre: cumulus a kilometre or two
+        // across are a metre or two, fields of popcorn, as from the real station)
+        .add(dome(q, 16).mul(billow(q, 90).mul(0.25).add(0.5)).mul(fade(3200, 1800)).add(fade(1800, 3200).mul(0.3)))
+        .add(dome(q, 5.5).mul(0.22).mul(fade(1100, 500)).add(fade(500, 1100).mul(0.12)))
+        // And lumps on the lumps, up close
+        .add(dome(q, 1.8).mul(0.09).mul(fade(420, 200)).add(fade(200, 420).mul(0.05)))
+        .sub(0.97);
     const p = positionWorld;
-    const octave = (scale: number, weight: number, fadeFrom: number, fadeTo: number) =>
-      mx_noise_float(p.mul(1 / scale)).mul(weight).mul(smoothstep(fadeFrom, fadeTo, far));
-    const detail = octave(420, 0.5, 9000, 8000).add(octave(130, 0.3, 4000, 2500)).add(octave(40, 0.18, 1800, 900)).add(octave(12, 0.1, 700, 300));
-    // Thin cover breaks into cells and wisps, thick cover stays whole; the edges are sharp
-    const density = cover.mul(1.3).add(detail.mul(0.5)).sub(0.3);
-    const cloud = smoothstep(0.04, 0.22, density);
-    // Thicker in the middles, a little darker at the ragged edges
-    const tone = mix(vec3(0.72, 0.75, 0.8), vec3(0.97, 0.98, 1), smoothstep(0.0, 0.6, density));
-    // The ground under a cloud's edge is shaded a touch (the cloud's shadow, near enough)
-    const land = ground.mul(float(1).sub(smoothstep(-0.1, 0.25, density).mul(0.25))).mul(detail.mul(0.1).add(1));
-    // The sun's glint off open sea (the map's blue over its red), rippled, under no cloud
-    const sea = smoothstep(0.02, 0.1, ground.b.sub(ground.r)).mul(float(1).sub(cloud));
+    const density = thickness(p);
+    const cloud = smoothstep(0.0, 0.12, density);
+    // Relief: the thickness as height (its slope from two nearby points along the surface), lit
+    // by the sun: each puff's dome bright on its sunward side, blue-grey on the other
+    const east = normalize(cross(n, vec3(0, 1, 0)));
+    const north = cross(east, n);
+    const step = float(0.5);
+    const dx = thickness(p.add(east.mul(step))).sub(density);
+    const dy = thickness(p.add(north.mul(step))).sub(density);
+    const bump = normalize(n.mul(0.05).sub(east.mul(dx)).sub(north.mul(dy)));
+    const towardSun = normalize(this.sunUniform.sub(n.mul(dot(this.sunUniform, n))));
+    const lighting = clamp(dot(bump, this.sunUniform).mul(1.05).add(0.1), 0, 1.15);
+    // Thin edges translucent and dimmer, thick middles bright
+    const tone = mix(vec3(0.26, 0.32, 0.45), vec3(1.05, 1.02, 0.98), clamp(lighting, 0, 1)).mul(mix(float(0.8), float(1.04), smoothstep(0.0, 0.35, density)));
+    const shadowOnSea = smoothstep(0.0, 0.12, thickness(p.sub(towardSun.mul(30)))).mul(0.62);
+    const land = ground.mul(float(1).sub(shadowOnSea)).mul(billow(p, 60).mul(0.06).add(1));
+    // The sun's glint off open sea (the map's blue over its red), under no cloud nor its shadow
+    const sea = smoothstep(0.02, 0.1, ground.b.sub(ground.r)).mul(float(1).sub(cloud)).mul(float(1).sub(shadowOnSea.mul(2)).max(0));
     const mirrored = reflect(view.negate(), n);
     const glint = pow(max(dot(mirrored, this.sunUniform), 0), 180).mul(2.5).add(pow(max(dot(mirrored, this.sunUniform), 0), 18).mul(0.12));
-    const surface = mix(land.mul(1.2), tone, cloud.mul(0.96)).add(vec3(1, 0.95, 0.85).mul(glint.mul(sea).mul(detail.mul(0.3).add(1))));
+    const surface = mix(land.mul(1.2), tone, cloud.mul(0.97)).add(vec3(1, 0.95, 0.85).mul(glint.mul(sea)));
     const rim = pow(float(1).sub(clamp(dot(n, view), 0, 1)), 3);
     const haze = vec3(0.35, 0.6, 1).mul(rim.mul(0.9).add(0.08));
     // Day: the surface and its haze; night: nearly black, a faint blue at the rim

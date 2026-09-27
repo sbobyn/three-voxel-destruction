@@ -185,11 +185,11 @@ function baseColour(m: Mat): Vec3 {
 /** Nearer than this (m) is the tool in hand, not the world: no ambient occlusion on it. */
 const HAND_REACH = 0.9;
 /**
- * Farther than this (m) gets none either: there the depth buffer is metres coarse (the Earth
- * under the station is 2 km off), and the occlusion made noise of it; nothing that far is
- * close enough to anything to be occluded by it that you'd see.
+ * Farther than this (m) it fades out: there the depth buffer is coarse (the Earth is 350 m under
+ * the station and 2 km off at the horizon), and the occlusion made noise of it; nothing that
+ * far is close enough to anything for its occlusion to show.
  */
-const AO_FAR = 400;
+const AO_FADE = [120, 250];
 
 export class CityRenderer {
   readonly renderer: THREE.WebGPURenderer;
@@ -332,7 +332,7 @@ export class CityRenderer {
     const raysOver = vec4(sunRays.rgb.mul(float(1).sub(smoke.a.mul(0.7))), 0);
     // The tool in hand (under a metre away) gets no occlusion: at the AO's metre-wide reach it
     // darkens itself all over, its lit parts too
-    const unoccluded = (z: THREE.Node<'float'>) => step(z.negate(), float(HAND_REACH)).max(step(float(AO_FAR), z.negate()));
+    const unoccluded = (z: THREE.Node<'float'>) => step(z.negate(), float(HAND_REACH)).max(smoothstep(float(AO_FADE[0]), float(AO_FADE[1]), z.negate()));
     const litSharp = over(vec4(shafts.rgb.mul(occlusion.getTextureNode().r.max(unoccluded(viewZ))), 1));
     // Depth of field, gathered from what's already drawn (the scene, its occlusion, the smoke):
     // a disc of taps sized by the blur at this pixel, each weighted by its own blur so what's
