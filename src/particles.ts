@@ -85,7 +85,7 @@ export type ParticleQuality = 'low' | 'medium' | 'high';
 const Kind = { Fire: 0, Smoke: 1, Dust: 2, Spark: 3 } as const;
 
 /** How a burst's particles are placed and launched (the spawn kernel). */
-const Burst = { Fireball: 0, Smoke: 1, DustRing: 2, Crumble: 3, Impact: 4, Smoulder: 5, Flame: 6, Sparks: 7 } as const;
+const Burst = { Fireball: 0, Smoke: 1, DustRing: 2, Crumble: 3, Impact: 4, Smoulder: 5, Flame: 6, Sparks: 7, Exhaust: 8 } as const;
 
 /** Each burst type's lifetime range (s) before its life scale; the live count mirrors it. */
 const LIFE: [number, number][] = [
@@ -97,6 +97,7 @@ const LIFE: [number, number][] = [
   [7, 12], // smouldering smoke
   [0.6, 1.2], // smouldering flame
   [1.2, 3], // sparks
+  [0.7, 1.4], // exhaust wisps
 ];
 
 /**
@@ -466,6 +467,12 @@ export class Particles {
     this.queue([Burst.Impact, size, speed, 1, t.r, t.g, t.b, 0.45, at[0], at[1], at[2], this.quality.size * thin.grow], [at[0], at[1], at[2]], Math.max(1, Math.round(n * 0.6)));
   }
 
+  /** A wisp of exhaust smoke (`amount` 0..1): a couple of small, faint, pale grey puffs. */
+  exhaust(at: ArrayLike<number>, amount: number): void {
+    const n = Math.max(1, Math.round((1 + 2 * amount) * this.quality.count));
+    this.queue([Burst.Exhaust, 0.1 + amount * 0.12, 1, 1, 0.86, 0.86, 0.88, 0.3 + amount * 0.15, at[0], at[1], at[2], this.quality.size], [at[0], at[1], at[2]], n);
+  }
+
   /** Lingering smoke source (e.g. burning spot) for `seconds`. */
   smoulder(at: ArrayLike<number>, seconds: number): void {
     const p = new THREE.Vector3(at[0], at[1], at[2]);
@@ -730,6 +737,14 @@ export class Particles {
           radius.assign(size.mul(rnd(5).mul(0.4).add(0.6)).add(0.5));
           kind.assign(Kind.Dust);
           growth.assign(size.mul(0.5).add(0.35));
+        })
+        .ElseIf(type.equal(Burst.Exhaust), () => {
+          // Small and short-lived: out of the pipe, rising a little, spreading slowly
+          pos.assign(origin.add(ball.mul(0.04)));
+          vel.assign(ball.mul(0.4).add(vec3(0, 0, rnd(3).mul(0.3).add(0.2))));
+          radius.assign(size.mul(rnd(5).mul(0.5).add(0.5)));
+          kind.assign(Kind.Dust);
+          growth.assign(size.mul(0.8));
         })
         .ElseIf(type.equal(Burst.Smoulder), () => {
           pos.assign(origin.add(ball.mul(0.5)));

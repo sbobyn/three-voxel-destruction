@@ -112,6 +112,11 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 .hud .speedo { position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%); text-align: center; text-shadow: 0 2px 6px #000; display: none; }
 .hud .speedo .v { font: 800 44px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -0.02em; }
 .hud .speedo .u { font-size: 11px; opacity: 0.7; letter-spacing: 0.12em; }
+.hud .speedo .gear { position: absolute; left: -34px; top: 4px; font: 800 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace; opacity: 0.8; }
+.hud .speedo .pods { display: flex; gap: 6px; justify-content: center; margin-top: 6px; font-size: 10px; letter-spacing: 0.1em; opacity: 0.85; align-items: center; }
+.hud .speedo .pod { width: 26px; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.15); overflow: hidden; }
+.hud .speedo .pod i { display: block; height: 100%; background: #ff5a3d; }
+.hud .speedo .pod.ready i { background: #ffd23d; }
 .hud .speedo .boost { height: 4px; width: 120px; margin: 8px auto 0; border-radius: 2px; background: rgba(255,255,255,0.15); overflow: hidden; }
 .hud .speedo .boost i { display: block; height: 100%; background: #ff8a3d; }
 .hud.driving .dock, .hud.driving .tip, .hud.driving .picked { display: none; }
@@ -125,6 +130,9 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 .menu p { margin: 0 0 18px; opacity: 0.7; font-size: 13.5px; line-height: 1.5; }
 .menu button.play { width: 100%; padding: 13px; border: 0; border-radius: 10px; background: #ff8a3d; color: #1a0f06; font: 700 15px inherit; font-family: inherit; cursor: pointer; }
 .menu button.play:hover { background: #ff9d57; }
+.menu .buttons { display: flex; gap: 8px; }
+.menu button.reset { flex: none; padding: 13px 18px; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; background: none; color: inherit; font: 600 14px inherit; font-family: inherit; cursor: pointer; }
+.menu button.reset:hover { border-color: #ff8a3d; }
 .menu .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 12px 0; font-size: 13px; }
 .menu .row input[type=range] { width: 200px; accent-color: #ff8a3d; }
 .menu .row select { background: #2a2d35; color: inherit; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 4px 8px; font: inherit; }
@@ -157,7 +165,8 @@ const DRIVING = [
   ['A / D', 'steer'],
   ['Space', 'handbrake'],
   ['Shift', 'boost'],
-  ['Mouse', 'look round · L fire the cannons'],
+  ['Mouse L', 'machine guns'],
+  ['Mouse R', 'rockets'],
   ['F', 'get out'],
   ['X', 'slow motion'],
   ['Esc', 'menu'],
@@ -184,6 +193,8 @@ export class Hud {
   private readonly wheelAim = { x: 0, y: 0 };
   private wheelOn = -1;
   private current = 0;
+  /** Called by the menu's Reset button: the scene as it started. */
+  onReset: () => void = () => {};
   /** Called when a slot or a wheel item is clicked or tapped. */
   onPick: (i: number) => void = () => {};
   /** Called as a finger or the mouse drags the carousel sideways (tools, towards the next one positive). */
@@ -218,7 +229,7 @@ export class Hud {
     keys.className = 'keys';
     this.setKeys(ON_FOOT);
     this.speedo.className = 'speedo';
-    this.speedo.innerHTML = `<div class="v">0</div><div class="u">KM/H</div><div class="boost"><i></i></div>`;
+    this.speedo.innerHTML = `<div class="gear">1</div><div class="v">0</div><div class="u">KM/H</div><div class="boost"><i></i></div><div class="pods"><span>RKT</span><div class="pod"><i></i></div><div class="pod"><i></i></div></div>`;
     for (const [i, t] of tools.entries()) {
       const slot = document.createElement('div');
       slot.className = 'slot';
@@ -364,7 +375,7 @@ export class Hud {
         <b>F</b><span>fly or walk (walking: Space jump, C crouch, Shift sprint)</span>
         <b>X</b><span>slow motion (the player moves at full speed: fly round a collapse)</span>
         <b>T · R</b><span>time of day · rebuild the ${track ? 'track' : 'city'}</span>
-        ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · Shift boost · click fires the cannons · F gets out (and back in)</span>' : ''}
+        ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · Shift boost · left button: the machine guns · right button: the rockets · F gets out (and back in)</span>' : ''}
       </div>
       <div class="row"><span>Look sensitivity</span><input type="range" name="sensitivity" min="0.2" max="3" step="0.05"></div>
       <div class="row"><span>Field of view</span><input type="range" name="fov" min="60" max="110" step="1"></div>
@@ -376,7 +387,7 @@ export class Hud {
       <div class="row"><span>Sun rays</span><input type="checkbox" name="sunRays"></div>
       <div class="row"><span>Graphics</span><select name="graphics"><option value="auto">Auto (tuned for this device)</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
       <div class="row tune"><span class="tuned"></span><button class="retune">Re-tune</button></div>
-      <button class="play">Play</button>
+      <div class="buttons"><button class="play">Play</button><button class="reset" title="The scene as it started (R)">Reset</button></div>
     </div>`;
     document.body.append(this.menu);
     this.loading.className = 'loading';
@@ -404,6 +415,7 @@ export class Hud {
       onChange();
     });
     (this.menu.querySelector('.play') as HTMLButtonElement).addEventListener('click', onPlay);
+    (this.menu.querySelector('.reset') as HTMLButtonElement).addEventListener('click', () => this.onReset());
   }
 
   /** What the device tuning chose, shown under the Graphics setting. */
@@ -573,10 +585,16 @@ export class Hud {
     this.setKeys(on ? DRIVING : ON_FOOT);
   }
 
-  /** The speedometer: km/h, and the boost left (0..1). */
-  speed(kmh: number, boost: number): void {
-    (this.speedo.firstElementChild as HTMLElement).textContent = String(Math.round(Math.abs(kmh)));
+  /** The speedometer: km/h, the boost left (0..1), the gear, and each rocket launcher's reload (0..1, 1 loaded). */
+  speed(kmh: number, boost: number, gear: number, launchers: number[]): void {
+    (this.speedo.querySelector('.v') as HTMLElement).textContent = String(Math.round(Math.abs(kmh)));
+    (this.speedo.querySelector('.gear') as HTMLElement).textContent = kmh < -1 ? 'R' : String(gear);
     (this.speedo.querySelector('.boost i') as HTMLElement).style.width = `${Math.round(boost * 100)}%`;
+    this.speedo.querySelectorAll('.pod').forEach((pod, k) => {
+      const f = launchers[k] ?? 1;
+      (pod.firstElementChild as HTMLElement).style.width = `${Math.round(f * 100)}%`;
+      pod.classList.toggle('ready', f >= 1);
+    });
   }
 
   /** A warm flash over the screen, stronger for nearer, bigger blasts (0..1). */

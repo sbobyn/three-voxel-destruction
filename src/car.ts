@@ -1,17 +1,20 @@
-// The race car: a low papaya-orange supercar built of voxels (half the world's size, so it
-// reads as a car and not a crate), driven on the CPU with arcade handling (grip that lets go
-// under the handbrake, speed-sensitive steering, a boost), and a pair of cannons that rise on
-// yellow arms from under the rear deck. The world's physics sees it as a box moved each step
-// (physics.ts drive): it shoves debris aside; what it drives into that still stands, it breaks
-// or is stopped by (main.ts), by the momentum it carries into it.
+// The race car: a low silver-blue mid-engined supercar built of voxels (0.1 m, finer than the
+// world's quarter metre, so it reads as a car and not a crate): a long nose between raised
+// front wings, a teardrop canopy, wide hips over the rear wheels, twin exhausts high in the
+// middle of the tail, bars of tail lights that brighten under braking. Driven on the CPU with
+// arcade handling (grip that lets go under the handbrake, speed-sensitive steering, seven
+// gears with a beat of lost drive at each change, a boost). Armed: two small machine guns rise
+// from the bonnet, and two rocket launchers swing up and out from the hips on yellow arms. The
+// world's physics sees it as a box moved each step (physics.ts drive): it shoves debris aside;
+// what it drives into that still stands, it breaks or is stopped by (main.ts).
 
 import * as THREE from 'three/webgpu';
-import { attribute, float, vec3 } from 'three/tsl';
+import { attribute, float, mix, uniform, vec3 } from 'three/tsl';
 import { edgeShade } from './look.ts';
 import { type City, State, VOXEL } from './world.ts';
 
-/** The model's voxel (m): half the world's. */
-const CELL = VOXEL / 2;
+/** The model's voxel (m): a quarter of the world's, fine enough for the curves of a car. */
+const CELL = 0.0625;
 /** The car's box for collisions and the solver: length, width, height (m), and its underside's height. */
 export const CAR_SIZE = [4.6, 2.0, 1.15];
 export const CLEARANCE = 0.12;
@@ -27,27 +30,176 @@ export interface Drive {
   boost: boolean;
 }
 
-// The body, in cells: x from the tail (0) to the nose (38), y across (0 to 16), z up
-const LEN = 38;
-const WID = 16;
-const PAPAYA = 0xff7a12;
-const CARBON = 0x17181a;
-const GLASS = 0x121c24;
+// The body in the car's frame (m): x forward from the middle, y to the left, z up from the ground
+const HALF_L = 2.3;
+const HALF_W = 1.0;
+const WHEEL_R = 0.34;
+/** Wheel centres along it, and their middle's distance out from the centre line. */
+const FRONT_AXLE = 1.42;
+const REAR_AXLE = -1.3;
+const TRACK = 0.84;
+const WHEEL_W = 0.3;
 
-type Finish = { colour: number; rough: number; metal: number; glow: number };
-const PAINT: Finish = { colour: PAPAYA, rough: 0.28, metal: 0.35, glow: 0 };
-const BLACK: Finish = { colour: CARBON, rough: 0.5, metal: 0.2, glow: 0 };
-const TINT: Finish = { colour: GLASS, rough: 0.08, metal: 0.6, glow: 0 };
-const HEAD: Finish = { colour: 0xe8f2ff, rough: 0.3, metal: 0, glow: 1.2 };
-const TAIL: Finish = { colour: 0xe0140c, rough: 0.3, metal: 0, glow: 0.9 };
-const WHITE: Finish = { colour: 0xf2efe8, rough: 0.35, metal: 0.1, glow: 0 };
-const YELLOW: Finish = { colour: 0xf2c21a, rough: 0.45, metal: 0.3, glow: 0 };
-const GUNMETAL: Finish = { colour: 0x2c3036, rough: 0.35, metal: 0.8, glow: 0 };
-const TYRE: Finish = { colour: 0x141414, rough: 0.85, metal: 0, glow: 0 };
-const RIM: Finish = { colour: 0xb8bcc2, rough: 0.25, metal: 0.9, glow: 0 };
+type Finish = { colour: number; rough: number; metal: number; glow: number; brake?: boolean };
+const PAINT: Finish = { colour: 0x8fa6bb, rough: 0.22, metal: 0.75, glow: 0 };
+const SHADOW: Finish = { colour: 0x6f8397, rough: 0.25, metal: 0.75, glow: 0 };
+const BLACK: Finish = { colour: 0x141517, rough: 0.5, metal: 0.25, glow: 0 };
+const TINT: Finish = { colour: 0x0f161d, rough: 0.06, metal: 0.7, glow: 0 };
+const HEAD: Finish = { colour: 0xe6f0ff, rough: 0.3, metal: 0, glow: 0.9 };
+const TAIL: Finish = { colour: 0xd0120a, rough: 0.3, metal: 0, glow: 1, brake: true };
+const PIPE: Finish = { colour: 0x6b6f75, rough: 0.3, metal: 0.9, glow: 0 };
+const YELLOW: Finish = { colour: 0xe8b810, rough: 0.4, metal: 0.3, glow: 0 };
+const GUNMETAL: Finish = { colour: 0x2a2e33, rough: 0.35, metal: 0.8, glow: 0 };
+const TIP: Finish = { colour: 0xb3261e, rough: 0.4, metal: 0.3, glow: 0 };
+const TYRE: Finish = { colour: 0x121212, rough: 0.9, metal: 0, glow: 0 };
+const RIM: Finish = { colour: 0x3a3e44, rough: 0.25, metal: 0.9, glow: 0 };
 
-/** Cells → a mesh of their open faces, edge-shaded like the world's voxels (centred on `origin`, in cells). */
-function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number]): THREE.Mesh {
+/** Straight lines between (x, value) points (x ascending), clamped at the ends. */
+function table(points: [number, number][], x: number): number {
+  if (x <= points[0][0]) return points[0][1];
+  for (let k = 1; k < points.length; k++) {
+    const [x1, v1] = points[k];
+    if (x <= x1) {
+      const [x0, v0] = points[k - 1];
+      const f = (x - x0) / (x1 - x0);
+      // Smoothed between the points (no creases along the body)
+      return v0 + (v1 - v0) * f * f * (3 - 2 * f);
+    }
+  }
+  return points[points.length - 1][1];
+}
+
+// Seen from above: half its width along it
+const PLAN: [number, number][] = [
+  [-2.3, 0.88],
+  [-2.1, 0.97],
+  [-1.6, 1.0],
+  [-0.85, 1.0],
+  [-0.35, 0.93],
+  [0.5, 0.92],
+  [1.1, 0.96],
+  [1.75, 0.96],
+  [2.05, 0.86],
+  [2.3, 0.58],
+];
+// Height of the shoulders at its sides: high over the wheels, low along the doors
+const SHOULDER: [number, number][] = [
+  [-2.3, 0.74],
+  [-1.9, 0.84],
+  [-1.35, 0.9],
+  [-0.75, 0.8],
+  [-0.2, 0.66],
+  [0.6, 0.64],
+  [1.15, 0.72],
+  [1.5, 0.76],
+  [1.95, 0.64],
+  [2.3, 0.4],
+];
+// Height down its middle (away from the canopy): the engine cover's spine, the bonnet's valley
+const SPINE: [number, number][] = [
+  [-2.3, 0.8],
+  [-1.7, 0.88],
+  [-1.0, 0.92],
+  [-0.85, 0.94],
+  [1.0, 0.6],
+  [1.6, 0.54],
+  [2.1, 0.46],
+  [2.3, 0.34],
+];
+// The canopy: roof height and half width along it, from the back of the cabin to the windscreen's foot
+const ROOF: [number, number][] = [
+  [-0.95, 0.92],
+  [-0.6, 1.08],
+  [0.0, 1.14],
+  [0.5, 1.07],
+  [1.05, 0.62],
+];
+const CABIN: [number, number][] = [
+  [-0.95, 0.34],
+  [-0.5, 0.6],
+  [0.1, 0.66],
+  [0.7, 0.62],
+  [1.05, 0.56],
+];
+
+/** What's at (x, y, z) m in the car's frame: its finish, or null (air). Symmetric: only |y| counts. */
+function shape(x: number, y: number, z: number): Finish | null {
+  const ay = Math.abs(y);
+  if (Math.abs(x) > HALF_L || z < CLEARANCE) return null;
+  const hw = table(PLAN, x);
+  if (ay > hw) return null;
+  // Wheel arches: the body is cut round each wheel, on the outside
+  for (const axle of [FRONT_AXLE, REAR_AXLE]) if (ay > TRACK - WHEEL_W / 2 - 0.1 && Math.hypot(x - axle, z - WHEEL_R) < WHEEL_R + 0.07) return null;
+  // The top here: the spine in the middle rolling out to the shoulders, rounded off at the edge
+  const r = ay / hw;
+  let top = table(SPINE, x) + (table(SHOULDER, x) - table(SPINE, x)) * Math.min(1, Math.max(0, (r - 0.25) / 0.6)) ** 2 * (3 - 2 * Math.min(1, Math.max(0, (r - 0.25) / 0.6)));
+  if (r > 0.9) top -= ((r - 0.9) / 0.1) ** 2 * 0.12;
+  // The lower sides tuck in (the sills are black, the flanks shadowed)
+  if (z < 0.22) return r > 0.97 ? null : BLACK;
+  // The canopy, a teardrop over the middle
+  const inCabinX = x > -0.95 && x < 1.05;
+  if (inCabinX) {
+    const cw = table(CABIN, x);
+    const base = table(SPINE, x);
+    const roof = table(ROOF, x);
+    if (ay < cw && z >= base - 0.02) {
+      const rise = base + (roof - base) * Math.sqrt(Math.max(0, 1 - (ay / cw) ** 2));
+      if (z <= rise) {
+        // Glass: the windscreen, the side windows; the roof and the pillars painted
+        const onTop = z > rise - 0.1 && ay < cw * 0.45 && x < 0.55;
+        const pillar = Math.abs(x - 0.55) < 0.06 || x < -0.55;
+        return onTop || pillar ? PAINT : TINT;
+      }
+    }
+  }
+  if (z > top) return null;
+  // Details, front to back
+  if (x > 2.08 && z < 0.26) return BLACK; // splitter
+  if (x > 2.12 && ay < 0.45 && z < 0.34) return BLACK; // the grille
+  if (x > 2.02 && x < 2.2 && ay > 0.56 && ay < 0.78 && z > top - 0.08 && z < top - 0.01) return HEAD; // headlights: a thin strip at the corners
+  if (ay > hw - 0.07 && x > -0.8 && x < -0.3 && z > 0.3 && z < 0.6) return BLACK; // side intakes
+  if (ay > hw - 0.05 && z > 0.36 && z < 0.44 && x > -0.3 && x < 1.1) return SHADOW; // a crease along the door
+  // The tail: the diffuser under it, a dark band with two rows of short light bars across each
+  // side, the exhausts high in the middle
+  if (x < -2.2) {
+    if (z < 0.34) return ay < 0.75 && Math.floor(ay / 0.19) % 2 === 1 && z < 0.3 ? SHADOW : BLACK;
+    const band = z > 0.5 && z < 0.7 && ay > 0.28 && ay < 0.9;
+    if (band) {
+      const row = (z > 0.54 && z < 0.59) || (z > 0.61 && z < 0.66);
+      const bar = ((ay - 0.32) / 0.11) % 1 < 0.62 && ay > 0.32 && ay < 0.86;
+      return row && bar ? TAIL : BLACK;
+    }
+  }
+  if (x < -2.05 && ay < 0.26 && z > top - 0.16 && z < top - 0.02) return ay < 0.06 ? BLACK : PIPE;
+  if (x < -2.24 && z > top - 0.04) return BLACK; // the ducktail's lip
+  return PAINT;
+}
+
+/** Cells of the body, from the shape sampled at each cell's middle. */
+function bodyCells(): Map<string, Finish> {
+  const cells = new Map<string, Finish>();
+  const nx = Math.round((2 * HALF_L) / CELL);
+  const ny = Math.round((2 * HALF_W) / CELL);
+  const nz = Math.round(1.2 / CELL);
+  for (let i = 0; i < nx; i++)
+    for (let j = 0; j < ny; j++)
+      for (let k = 0; k < nz; k++) {
+        const f = shape(-HALF_L + (i + 0.5) * CELL, -HALF_W + (j + 0.5) * CELL, (k + 0.5) * CELL);
+        if (f) cells.set(`${i},${j},${k}`, f);
+      }
+  // Mirrors on stalks by the windscreen, just outside the body
+  const i0 = Math.round((0.72 + HALF_L) / CELL);
+  const k0 = Math.round(0.74 / CELL);
+  for (const j of [-1, -2, ny, ny + 1])
+    for (let i = i0; i < i0 + 3; i++) {
+      for (let k = k0; k < k0 + 2; k++) cells.set(`${i},${j},${k}`, PAINT);
+      cells.set(`${i},${j},${k0 - 1}`, BLACK);
+    }
+  return cells;
+}
+
+/** Cells → a mesh of their open faces, edge-shaded like the world's voxels (`origin` in cells). */
+function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number], brake: THREE.UniformNode<'float', number>): THREE.Mesh {
   const pos: number[] = [];
   const nor: number[] = [];
   const col: number[] = [];
@@ -55,6 +207,7 @@ function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number])
   const rough: number[] = [];
   const metal: number[] = [];
   const glow: number[] = [];
+  const lamp: number[] = [];
   const colour = new THREE.Color();
   const faces: [number[], number[][]][] = [
     [[1, 0, 0], [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]]],
@@ -78,6 +231,7 @@ function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number])
         rough.push(f.rough);
         metal.push(f.metal);
         glow.push(f.glow);
+        lamp.push(f.brake ? 1 : 0);
       }
     }
   }
@@ -89,118 +243,76 @@ function voxelMesh(cells: Map<string, Finish>, origin: [number, number, number])
   g.setAttribute('rough', new THREE.Float32BufferAttribute(rough, 1));
   g.setAttribute('metal', new THREE.Float32BufferAttribute(metal, 1));
   g.setAttribute('glow', new THREE.Float32BufferAttribute(glow, 1));
+  g.setAttribute('lamp', new THREE.Float32BufferAttribute(lamp, 1));
   const m = new THREE.MeshStandardNodeMaterial();
-  // A lighter edge than the world's voxels: at half their size, the full darkening reads as tiles
-  const shade = edgeShade(attribute('local', 'vec3') as unknown as THREE.Node<'vec3'>, vec3(1, 1, 1), 0.08).mul(0.5).add(0.5);
-  const base = attribute('color', 'vec3').mul(shade);
-  m.colorNode = base as unknown as THREE.Node<'color'>;
+  // A much lighter edge than the world's voxels: at a quarter of their size, the full darkening draws contour lines
+  const shade = edgeShade(attribute('local', 'vec3') as unknown as THREE.Node<'vec3'>, vec3(1, 1, 1), 0.1).mul(0.18).add(0.82);
+  m.colorNode = attribute('color', 'vec3').mul(shade) as unknown as THREE.Node<'color'>;
   m.roughnessNode = attribute('rough', 'float') as unknown as THREE.Node<'float'>;
   m.metalnessNode = attribute('metal', 'float') as unknown as THREE.Node<'float'>;
-  m.emissiveNode = attribute('color', 'vec3').mul(attribute('glow', 'float')).add(float(0)) as unknown as THREE.Node<'color'>;
+  // Lights glow; the tail lights by how hard it's braking (dim running lights to bright)
+  const glowing = attribute('glow', 'float').mul(mix(float(1), brake, attribute('lamp', 'float')));
+  m.emissiveNode = attribute('color', 'vec3').mul(glowing) as unknown as THREE.Node<'color'>;
   const mesh = new THREE.Mesh(g, m);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
 }
 
-/** The body's cells (wheels and cannons apart). */
-function bodyCells(): Map<string, Finish> {
+/** A wheel's cells: tyre round a dark five-spoke rim, along y. */
+function wheelCells(): Map<string, Finish> {
   const cells = new Map<string, Finish>();
-  const put = (x: number, y: number, z: number, f: Finish) => cells.set(`${x},${y},${z}`, f);
-  const mirror = (x: number, y: number, z: number, f: Finish) => {
-    put(x, y, z, f);
-    put(x, WID - 1 - y, z, f);
-  };
-  // Wheel arches: front wheels at x 29-35, rear at 5-12 (cells), open to the outer 3 cells
-  const arch = (x: number, y: number, z: number) => {
-    const inner = y >= 3 && y <= WID - 4;
-    if (inner) return false;
-    const front = Math.hypot(x + 0.5 - 32, z + 0.5 - 2.7) < 3.6;
-    const rear = Math.hypot(x + 0.5 - 8.5, z + 0.5 - 2.9) < 3.8;
-    return front || rear;
-  };
-  // The body's top at each station along it: a low nose, the windscreen rising to the roof,
-  // the roof falling away over the engine to a high tail
-  const top = (x: number): number => {
-    if (x >= 34) return 3;
-    if (x >= 27) return 4;
-    if (x >= 24) return 5 + (27 - x) * 0.7;
-    if (x >= 14) return 8;
-    if (x >= 5) return 8 - (14 - x) * 0.34;
-    return 5;
-  };
-  // How far in from the side the body's top narrows (the cabin is narrower than the hips)
-  const inset = (x: number, z: number): number => (z >= 6 ? (x >= 14 && x < 24 ? 3 : 4) : z >= 5 ? 1 : 0);
-  for (let x = 0; x < LEN; x++) {
-    const t = Math.floor(top(x));
-    for (let z = 1; z <= t; z++) {
-      const i = inset(x, z) + (x >= 36 ? 1 : 0) + (x === 37 ? 1 : 0);
-      for (let y = i; y < WID - i; y++) {
-        if (arch(x, y, z)) continue;
-        // The glass: the windscreen and the cabin's sides and back window
-        const cabin = x >= 14 && x < 27 && z >= 5;
-        const pillar = cabin && (x === 14 || x === 26) && (y === i || y === WID - 1 - i);
-        const glass = cabin && !pillar && z < t + 1 && (z >= 6 || x >= 24) && !(z === t && x < 24 && y > i && y < WID - 1 - i);
-        let f: Finish = glass ? TINT : PAINT;
-        // Carbon: the sills, the splitter, the diffuser, the roof scoop
-        if (z === 1) f = BLACK;
-        if (x >= 36 && z <= 2) f = BLACK;
-        if (x < 3 && z <= 2) f = BLACK;
-        if (z === t && x >= 15 && x < 21 && y >= 6 && y <= 9 && z >= 8) f = BLACK;
-        // Side intakes behind the doors
-        if ((y === 0 || y === WID - 1) && x >= 12 && x < 16 && z >= 2 && z <= 4) f = BLACK;
-        put(x, y, z, f);
-      }
-    }
-  }
-  // A white stripe up the middle over the nose and the roof
-  for (let x = 0; x < LEN; x++) {
-    const t = Math.floor(top(x));
-    for (const y of [7, 8]) {
-      const key = `${x},${y},${t}`;
-      if (cells.get(key) === PAINT) cells.set(key, WHITE);
-    }
-  }
-  // Headlights, tail lights
-  for (let y = 2; y < 5; y++) mirror(37, y, 2, HEAD);
-  for (let y = 1; y < WID - 1; y++) put(0, y, 4, y % 5 === 2 ? BLACK : TAIL);
-  // The rear wing on two struts
-  for (let x = 0; x < 4; x++) for (let y = 0; y < WID; y++) put(x, y, 10, y === 0 || y === WID - 1 ? BLACK : PAINT);
-  for (const y of [4, 11]) for (let z = 6; z < 10; z++) put(2, y, z, BLACK);
-  // Mirrors
-  mirror(24, -1, 6, BLACK);
-  mirror(25, -1, 6, BLACK);
-  return cells;
-}
-
-/** A wheel's cells: tyre round a silver rim, `width` cells wide along y. */
-function wheelCells(radius: number, width: number): Map<string, Finish> {
-  const cells = new Map<string, Finish>();
+  const radius = WHEEL_R / CELL;
+  const width = Math.round(WHEEL_W / CELL);
   const r = Math.ceil(radius);
   for (let x = -r; x < r; x++) {
     for (let z = -r; z < r; z++) {
       const d = Math.hypot(x + 0.5, z + 0.5);
       if (d > radius) continue;
+      const a = Math.atan2(z + 0.5, x + 0.5);
+      const spoke = Math.cos(a * 5) > 0.55 || d < 1;
       for (let y = 0; y < width; y++) {
         const face = y === 0 || y === width - 1;
-        const spoke = face && d < radius - 1 && (Math.abs(x + 0.5) < 0.8 || Math.abs(z + 0.5) < 0.8);
-        cells.set(`${x},${y},${z}`, d > radius - 1.2 ? TYRE : face ? (spoke || d < 1 ? RIM : BLACK) : RIM);
+        cells.set(`${x},${y},${z}`, d > radius - 1 ? TYRE : face ? (spoke ? RIM : BLACK) : RIM);
       }
     }
   }
   return cells;
 }
 
-/** One cannon: a yellow arm, the gun on it, its barrel pointing forward (+x), a dark muzzle ring. */
-function cannonCells(): Map<string, Finish> {
+/** A machine gun: a small breech on a post, a long thin barrel forward (+x). */
+function gunCells(): Map<string, Finish> {
   const cells = new Map<string, Finish>();
   const put = (x: number, y: number, z: number, f: Finish) => cells.set(`${x},${y},${z}`, f);
-  for (let z = 0; z < 5; z++) for (let x = 0; x < 2; x++) for (let y = 0; y < 2; y++) put(x, y, z, YELLOW);
-  for (let x = -2; x < 5; x++) for (let y = -1; y < 3; y++) for (let z = 5; z < 8; z++) put(x, y, z, x === -2 ? BLACK : GUNMETAL);
-  for (let x = 5; x < 13; x++) for (let y = 0; y < 2; y++) for (let z = 6; z < 8; z++) put(x, y, z, GUNMETAL);
-  for (let y = -1; y < 3; y++) for (let z = 5; z < 9; z++) if (y < 0 || y > 1 || z < 6 || z > 7) put(13, y, z, BLACK);
+  for (let z = 0; z < 2; z++) put(0, 0, z, BLACK);
+  for (let x = -2; x < 3; x++) for (let y = -1; y < 1; y++) for (let z = 2; z < 4; z++) put(x, y, z, GUNMETAL);
+  for (let x = 3; x < 9; x++) put(x, 0, 3, GUNMETAL);
+  put(9, 0, 3, BLACK);
   return cells;
 }
+
+/** A rocket launcher: a box with a red-tipped rocket in its mouth, pointing forward (+x). */
+function launcherCells(): Map<string, Finish> {
+  const cells = new Map<string, Finish>();
+  const put = (x: number, y: number, z: number, f: Finish) => cells.set(`${x},${y},${z}`, f);
+  for (let x = -3; x < 5; x++) for (let y = -1; y < 2; y++) for (let z = -1; z < 2; z++) put(x, y, z, x === -3 ? BLACK : GUNMETAL);
+  for (let y = -1; y < 2; y++) for (let z = -1; z < 2; z++) put(5, y, z, y === 0 && z === 0 ? TIP : BLACK);
+  return cells;
+}
+
+/** A yellow arm, `n` cells long up its z, two thick. */
+function armCells(n: number): Map<string, Finish> {
+  const cells = new Map<string, Finish>();
+  for (let z = 0; z < n; z++) for (let x = 0; x < 2; x++) for (let y = 0; y < 2; y++) cells.set(`${x},${y},${z}`, YELLOW);
+  return cells;
+}
+/** The launchers' arms (cells). */
+const ARM = 8;
+
+/** Top gear speeds (km/h) of each of the seven gears (the first from rest). */
+const GEARS = [0, 62, 104, 146, 188, 232, 276, 360];
+/** Seconds of lost drive at an upshift. */
+const SHIFT = 0.16;
 
 /** The race car: its model, its handling, and where it is. */
 export class Car {
@@ -215,45 +327,68 @@ export class Car {
   roll = 0;
   /** Sliding sideways (m/s): screeching tyres. */
   slip = 0;
-  /** 0 (stowed) to 1 (up and firing): the cannons' rise. */
-  deployed = 0;
+  /** The gear (1-7), the revs in it (0 idle to 1 the limiter), and upshifts so far (a new one: an afterfire). */
+  gear = 1;
+  revs = 0;
+  shifts = 0;
+  private shifting = 0;
+  /** 0 (stowed) to 1 (up and firing): the machine guns and the rocket launchers, and whether each is wanted. */
+  guns = 0;
+  rockets = 0;
   wantGuns = false;
+  wantRockets = false;
+  /** How hard the tail lights glow (the running lights; bright when braking). */
+  readonly brakeLight = uniform(0.3);
   /** The pose at the start of the world's step, to draw it between steps; and at the start of the sub-step, to undo it. */
   private readonly prev = new THREE.Vector3();
   private prevHeading = 0;
   private readonly sub = new THREE.Vector3();
   private subHeading = 0;
   private readonly wheels: THREE.Object3D[] = [];
-  private readonly guns: THREE.Object3D[] = [];
+  private readonly mgs: THREE.Object3D[] = [];
+  private readonly arms: { pivot: THREE.Object3D; launcher: THREE.Object3D; side: number }[] = [];
   private readonly body: THREE.Object3D;
-  /** The body's lean in corners and pitch under braking (rad), eased. */
+  /** The body's lean in corners and pitch under braking and at each shift (rad), eased. */
   private lean = 0;
   private pitch = 0;
+  private braking = false;
 
   constructor() {
-    const cells = bodyCells();
-    this.body = voxelMesh(cells, [LEN / 2, WID / 2, 0]);
-    this.body.position.z = CLEARANCE - CELL;
+    const brake = this.brakeLight;
+    this.body = voxelMesh(bodyCells(), [HALF_L / CELL, HALF_W / CELL, 0], brake);
     this.object.add(this.body);
-    const wheel = wheelCells(2.7, 3);
-    for (const [x, y] of [
-      [32, -0.5],
-      [32, WID - 2.5],
-      [8.5, -0.5],
-      [8.5, WID - 2.5],
+    const wheel = wheelCells();
+    const half = WHEEL_W / CELL / 2;
+    for (const [x, s] of [
+      [FRONT_AXLE, 1],
+      [FRONT_AXLE, -1],
+      [REAR_AXLE, 1],
+      [REAR_AXLE, -1],
     ]) {
       const hub = new THREE.Group();
-      hub.position.set((x - LEN / 2) * CELL, (y + 1.5 - WID / 2) * CELL, 2.7 * CELL);
-      const spin = voxelMesh(wheel, [0, 1.5, 0]);
-      hub.add(spin);
+      hub.position.set(x, s * TRACK, WHEEL_R);
+      hub.add(voxelMesh(wheel, [0, half, 0], brake));
       this.object.add(hub);
       this.wheels.push(hub);
     }
-    for (const y of [3.5, WID - 4.5]) {
-      const gun = voxelMesh(cannonCells(), [0, 0, 0]);
-      gun.position.set((7 - LEN / 2) * CELL, (y - WID / 2 + 0.5) * CELL, 0);
+    // Machine guns in the bonnet either side of its valley
+    for (const s of [1, -1]) {
+      const gun = voxelMesh(gunCells(), [0.5, 0.5, 0], brake);
+      gun.position.set(1.25, s * 0.5, 0.5);
       this.body.add(gun);
-      this.guns.push(gun);
+      this.mgs.push(gun);
+    }
+    // Rocket launchers on yellow arms from the hips: stowed flat inside, swung up and out
+    for (const s of [1, -1]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(-1.35, s * 0.62, 0.72);
+      const arm = voxelMesh(armCells(ARM), [1, 1, 0], brake);
+      pivot.add(arm);
+      const launcher = voxelMesh(launcherCells(), [0.5, 0.5, 0.5], brake);
+      launcher.position.set(0, 0, (ARM + 1) * CELL);
+      pivot.add(launcher);
+      this.body.add(pivot);
+      this.arms.push({ pivot, launcher, side: s });
     }
   }
 
@@ -264,6 +399,9 @@ export class Car {
     this.heading = this.prevHeading = heading;
     this.velocity.set(0, 0);
     this.yawRate = 0;
+    this.gear = 1;
+    this.guns = this.rockets = 0;
+    this.wantGuns = this.wantRockets = false;
   }
 
   get forward(): THREE.Vector2 {
@@ -282,8 +420,8 @@ export class Car {
 
   /**
    * `dt` of handling (a world step in a few parts, so a fast car can't pass through a thin
-   * wall between checks): engine, brakes, grip and steering. Only the motion: what it runs
-   * into is main.ts's (`sweep` below).
+   * wall between checks): engine and gears, brakes, grip and steering. Only the motion: what
+   * it runs into is main.ts's (`sweep` below).
    */
   step(dt: number, d: Drive): void {
     this.sub.copy(this.position);
@@ -292,10 +430,26 @@ export class Car {
     const side = new THREE.Vector2(-f.y, f.x);
     let along = this.velocity.dot(f);
     const across = this.velocity.dot(side);
+    // Gears: up at the top of each (a beat of lost drive, an afterfire), down as it slows
+    const kmh = Math.abs(along) * 3.6;
+    if (this.gear < GEARS.length - 1 && kmh > GEARS[this.gear]) {
+      this.gear++;
+      if (d.throttle > 0.3) {
+        this.shifting = SHIFT;
+        this.shifts++;
+        this.pitch += 0.025;
+      }
+    } else if (this.gear > 1 && kmh < GEARS[this.gear - 1] * 0.92) this.gear--;
+    this.shifting = Math.max(0, this.shifting - dt);
+    const low = GEARS[this.gear - 1];
+    const within = Math.min(1, (kmh - low) / (GEARS[this.gear] - low));
+    this.revs = 0.25 + 0.75 * (this.gear === 1 ? within : 0.35 + within * 0.65);
     // Engine and brakes: strong off the line, fading towards top speed; braking, then reverse
     const top = d.boost ? 95 : 78;
+    this.braking = (d.throttle < 0 && along > 0.5) || (d.handbrake && Math.abs(along) > 0.5);
     if (d.throttle > 0) {
-      const push = along < 0 ? 30 : 17 * Math.max(0, 1 - (along / top) ** 2) * (d.boost ? 1.5 : 1);
+      const cut = this.shifting > 0 ? 0.25 : 1;
+      const push = along < 0 ? 30 : 17 * Math.max(0, 1 - (along / top) ** 2) * (d.boost ? 1.5 : 1) * cut;
       along += push * d.throttle * dt;
     } else if (d.throttle < 0) {
       if (along > 0.5) along = Math.max(0, along + 32 * d.throttle * dt);
@@ -309,7 +463,7 @@ export class Car {
     const want = d.steer * most;
     this.steer += Math.max(-3.5 * dt, Math.min(3.5 * dt, want - this.steer));
     // Yaw from the steering (a bicycle, 2.7 m between the axles); the handbrake lets the back step out
-    const wheelbase = 2.7;
+    const wheelbase = FRONT_AXLE - REAR_AXLE;
     const target = (along / wheelbase) * Math.tan(this.steer) * (d.handbrake ? 1.45 : 1);
     this.yawRate += (target - this.yawRate) * Math.min(1, dt * (d.handbrake ? 3 : 9));
     this.heading += this.yawRate * dt;
@@ -324,12 +478,14 @@ export class Car {
     this.velocity.copy(nf.multiplyScalar(on)).add(ns.multiplyScalar(slide));
     this.position.x += this.velocity.x * dt;
     this.position.y += this.velocity.y * dt;
-    this.roll += (along / (2.7 * CELL)) * dt;
-    // Body lean and pitch, for the look of it
-    this.lean += (Math.max(-0.07, Math.min(0.07, -this.yawRate * along * 0.004)) - this.lean) * Math.min(1, dt * 6);
-    this.pitch += (Math.max(-0.05, Math.min(0.05, d.throttle < 0 && along > 1 ? 0.04 : d.throttle > 0 ? -0.02 : 0)) - this.pitch) * Math.min(1, dt * 5);
-    // The cannons rise while wanted
-    this.deployed = Math.max(0, Math.min(1, this.deployed + (this.wantGuns ? dt * 3 : -dt * 1.5)));
+    this.roll += (along / WHEEL_R) * dt;
+    // Body lean and pitch, for the look of it: squat under power, dive under brakes, a nod at each shift
+    this.lean += (Math.max(-0.06, Math.min(0.06, -this.yawRate * along * 0.004)) - this.lean) * Math.min(1, dt * 6);
+    const squat = this.braking ? 0.035 : d.throttle > 0 && this.shifting === 0 ? -0.015 : 0;
+    this.pitch += (squat - this.pitch) * Math.min(1, dt * 5);
+    // The weapons come up while wanted
+    this.guns = Math.max(0, Math.min(1, this.guns + (this.wantGuns ? dt * 5 : -dt * 2)));
+    this.rockets = Math.max(0, Math.min(1, this.rockets + (this.wantRockets ? dt * 2.5 : -dt * 1.5)));
   }
 
   /** Back to where it was before this part of the step (it ran into something that held), bouncing off at `bounce` of its speed. */
@@ -347,27 +503,41 @@ export class Car {
     dh = Math.atan2(Math.sin(dh), Math.cos(dh));
     this.object.rotation.set(0, 0, this.prevHeading + dh * alpha);
     this.body.rotation.set(this.lean, this.pitch, 0);
-    for (const [k, w] of this.wheels.entries()) {
-      w.rotation.set(0, this.roll, k < 2 ? this.steer : 0, 'ZYX');
+    for (const [k, w] of this.wheels.entries()) w.rotation.set(0, this.roll, k < 2 ? this.steer : 0, 'ZYX');
+    this.brakeLight.value = this.braking ? 1.8 : 0.3;
+    // Machine guns: up out of the bonnet
+    const g = THREE.MathUtils.smoothstep(this.guns, 0, 1);
+    for (const m of this.mgs) {
+      m.position.z = 0.5 + g * 0.16;
+      m.visible = this.guns > 0.02;
     }
-    // Cannons: up out of the deck on their arms, then tilted level
-    const up = THREE.MathUtils.smoothstep(this.deployed, 0, 1);
-    for (const g of this.guns) {
-      // Stowed under the deck (5-6 cells up there), raised to stand on it on their arms
-      g.position.z = (-3 + 9 * up) * CELL;
-      g.visible = this.deployed > 0.02;
+    // Launchers: the arm rises from inside the hip, then swings out to the side at 40 degrees;
+    // the launcher on its end stays level, pointing forward
+    const rise = THREE.MathUtils.smoothstep(this.rockets, 0, 0.5);
+    const swing = THREE.MathUtils.smoothstep(this.rockets, 0.4, 1);
+    for (const { pivot, launcher, side } of this.arms) {
+      pivot.position.z = 0.35 + rise * 0.37;
+      pivot.rotation.set(-side * swing * 0.7, -swing * 0.25, 0);
+      launcher.rotation.set(side * swing * 0.7, swing * 0.25, 0, 'ZYX');
+      pivot.visible = this.rockets > 0.02;
     }
   }
 
-  /** Where the cannons' muzzles are now (world, m). */
-  muzzles(): THREE.Vector3[] {
-    return this.guns.map((g) => g.localToWorld(new THREE.Vector3(14 * CELL, 1 * CELL, 7 * CELL)));
+  /** Where the machine guns' and the launchers' muzzles are now (world, m). */
+  muzzles(): { guns: THREE.Vector3[]; rockets: THREE.Vector3[] } {
+    this.object.updateMatrixWorld(true);
+    return {
+      guns: this.mgs.map((m) => m.localToWorld(new THREE.Vector3(9.5 * CELL, 0, 3.5 * CELL))),
+      rockets: this.arms.map(({ launcher }) => launcher.localToWorld(new THREE.Vector3(6 * CELL, 0, 0))),
+    };
   }
 
-  /** The body's corners' rotation as a quaternion (xyzw), for the solver. */
-  quaternion(): number[] {
-    const h = this.heading / 2;
-    return [0, 0, Math.sin(h), Math.cos(h)];
+  /** Where the exhausts are (world, m), and the way out of them (backwards). */
+  exhausts(): { at: THREE.Vector3[]; back: THREE.Vector3 } {
+    this.object.updateMatrixWorld(true);
+    const at = [-1, 1].map((s) => this.body.localToWorld(new THREE.Vector3(-HALF_L - 0.02, s * 0.14, 0.8)));
+    const f = this.forward;
+    return { at, back: new THREE.Vector3(-f.x, -f.y, 0.15).normalize() };
   }
 }
 

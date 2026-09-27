@@ -195,13 +195,13 @@ export class Sounds {
 
   /** The laser: a hum while it fires (start with true, stop with false), crackling where it burns. */
   /**
-   * The race car's engine, running while it's there: `update` it each frame with the speed
-   * (km/h), the throttle (0..1), how fast it's sliding sideways (m/s) and how far off the
-   * listener is (m). Two detuned saws and one an octave down, through a low-pass that opens
-   * with the throttle; the revs climb through seven gears and drop at each change. The tyres
-   * screech (band-passed noise) as it slides.
+   * The race car's engine, running while it's there: `update` it each frame with the revs
+   * (0 idle to 1 the limiter: car.ts climbs them through its gears), the throttle (0..1), how
+   * fast it's sliding sideways (m/s) and how far off the listener is (m). Two detuned saws and
+   * one an octave down, through a low-pass that opens with the throttle. The tyres screech
+   * (band-passed noise) as it slides.
    */
-  engine(): { update(kmh: number, throttle: number, slide: number, distance: number): void; stop(): void } | null {
+  engine(): { update(revs: number, throttle: number, slide: number, distance: number): void; stop(): void } | null {
     const { ctx } = this;
     if (!ctx || !this.master) return null;
     const t = ctx.currentTime;
@@ -232,15 +232,9 @@ export class Sounds {
     screech.gain.value = 0;
     hiss.connect(band).connect(screech).connect(this.master);
     hiss.start(t);
-    const GEARS = [0, 55, 95, 135, 175, 215, 255, 330];
     return {
-      update: (kmh, throttle, slide, distance) => {
+      update: (revs, throttle, slide, distance) => {
         const now = ctx.currentTime;
-        const v = Math.abs(kmh);
-        let gear = 1;
-        while (gear < GEARS.length - 1 && v > GEARS[gear]) gear++;
-        const within = (v - GEARS[gear - 1]) / (GEARS[gear] - GEARS[gear - 1]);
-        const revs = 0.28 + 0.72 * Math.min(1, gear === 1 ? within : 0.3 + within * 0.7);
         const f = 38 + revs * 170;
         for (const { o, k } of voices) o.frequency.setTargetAtTime(f * k, now, 0.03);
         lp.frequency.setTargetAtTime(350 + throttle * 2600 + revs * 600, now, 0.05);
@@ -255,6 +249,21 @@ export class Sounds {
         hiss.stop(ctx.currentTime + 0.5);
       },
     };
+  }
+
+  /** A machine gun's shot heard from `distance` m: a short hard crack. */
+  gun(distance: number): void {
+    const near = 1 / (1 + distance / 20);
+    this.rumble(0.22 * near, 4200, 500, 0.07);
+    this.tone(0.06 * near, 900, 180, 0.04, 'square');
+  }
+
+  /** An exhaust's afterfire pop at a gear change, from `distance` m. */
+  pop(distance: number): void {
+    const near = 1 / (1 + distance / 12);
+    this.rumble(0.2 * near, 1600, 120, 0.14);
+    this.tone(0.07 * near, 260, 50, 0.09, 'square');
+    this.rumble(0.12 * near, 1300, 100, 0.1, 0.07);
   }
 
   laser(on: boolean): void {

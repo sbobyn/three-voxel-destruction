@@ -108,6 +108,12 @@ export class Chips {
     }
   }
 
+  /** All gone (a fresh world). */
+  clear(): void {
+    this.age.fill(this.life);
+    this.update(0);
+  }
+
   update(dt: number): void {
     const { p, v, city } = this;
     let live = 0;
