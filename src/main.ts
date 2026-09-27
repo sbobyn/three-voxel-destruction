@@ -62,9 +62,10 @@ interface Effects {
   sparks(at: ArrayLike<number>, count: number, speed: number): void;
   exhaust(at: ArrayLike<number>, amount: number): void;
   tyreSmoke(at: ArrayLike<number>, amount: number): void;
+  engineSmoke(at: ArrayLike<number>, damage: number): void;
   update(dt: number, camera: THREE.Camera): void;
 }
-const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, tyreSmoke() {}, update() {} };
+const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, tyreSmoke() {}, engineSmoke() {}, update() {} };
 
 /** Which world: the city block (the default), the race track (?scene=track) or the space station (?scene=space). */
 const SCENE: 'city' | 'track' | 'space' = (['track', 'space'] as const).find((s) => s === new URLSearchParams(location.search).get('scene')) ?? 'city';
@@ -84,7 +85,7 @@ let boostLeft = 1;
 /** Its engine's sound (once the audio's started). */
 let engine: ReturnType<Sounds['engine']> = null;
 /** The chase camera: its yaw (following the car's heading), the mouse's look round and up (eased back when let go). */
-const chase = { yaw: 0, orbit: 0, lift: 0, idle: 0, kick: 0 };
+const chase = { yaw: 0, orbit: 0, lift: 0, idle: 0 };
 /** Build the scene's world (and, at the track, its line). */
 function buildWorld(): City {
   if (SCENE === 'city') return buildCity();
@@ -577,7 +578,7 @@ async function start(): Promise<void> {
     car = new Car();
     flames = new Flames(car.exhausts().at.length);
     skids = new SkidMarks(2);
-    view.scene.add(car.object, flames.object, skids.object);
+    view.scene.add(car.object, car.bits.object, flames.object, skids.object);
     placeCar();
     setDriving(true);
   }
@@ -714,6 +715,7 @@ function placeCar(): void {
   if (!car || !line) return;
   const { position, heading } = gridSlot(line);
   car.place(position[0], position[1], heading);
+  car.repair();
   carSlot = physics.vehicle(CAR_SIZE, [position[0], position[1], CLEARANCE + CAR_SIZE[2] / 2]);
   boostLeft = 1;
   chase.yaw = heading;
@@ -733,7 +735,7 @@ function driveInput(): Drive {
     throttle: clamp(k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown') + stick.forward),
     steer: clamp(k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight') - stick.right),
     handbrake: keys.has('Space') || touch?.up === true,
-    boost: (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch?.sprint === true) && boostLeft > 0,
+    boost: (keys.has('KeyB') || touch?.sprint === true) && boostLeft > 0,
   };
 }
 
@@ -750,9 +752,16 @@ function driveStep(dt: number): void {
   c.begin();
   const [x0, y0, h0] = [c.position.x, c.position.y, c.heading];
   const parts = Math.max(1, Math.ceil((c.velocity.length() * dt) / 0.33));
+  // Already into something (wedged, or a wall left standing round it)? A move that goes no further in is free:
+  // it can always drive out, or along, never deeper
+  let inside = sweep(city, c.position.x, c.position.y, c.heading).length;
   for (let k = 0; k < parts; k++) {
     c.step(dt / parts, d);
     const hits = sweep(city, c.position.x, c.position.y, c.heading);
+    if (hits.length && hits.length <= inside) {
+      inside = hits.length;
+      continue;
+    }
     if (hits.length && !crash(hits)) {
       c.undo(0.2);
       break;
@@ -780,10 +789,13 @@ function crash(hits: number[]): boolean {
       sounds.hammer(2);
       shake = Math.max(shake, Math.min(0.8, v / 20));
     }
+    // Stopped dead: the harder it hit, the more it's hurt (a nudge at walking pace, none), where it hit
+    hurtCar(Math.max(0, v - 5) * STOP_DAMAGE, struck(hits));
     return false;
   }
-  const f = c.forward;
-  const nose = new THREE.Vector3(c.position.x + f.x * (CAR_SIZE[0] / 2 + 0.15), c.position.y + f.y * (CAR_SIZE[0] / 2 + 0.15), CLEARANCE + 0.55);
+  // Where it's going into things (nose, tail or side: the middle of what it struck), and across its way there
+  const f = new THREE.Vector2(c.velocity.x, c.velocity.y).normalize();
+  const nose = struck(hits).setZ(CLEARANCE + 0.55);
   const at = (h: number) => Array.from(city.position.subarray(3 * h, 3 * h + 3));
   const near = (a: number[], b: number[], r: number) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2 < r * r;
   const hitsAt: Hit[] = [];
@@ -809,7 +821,64 @@ function crash(hits: number[]): boolean {
   sounds.wreck(3, Math.min(40, v));
   shake = Math.max(shake, Math.min(1.1, 0.25 + v / 45));
   c.velocity.multiplyScalar(kept);
+  // Through, but hurt by as much speed as what it hit took off it, where it hit
+  hurtCar(v * (1 - kept) * THROUGH_DAMAGE, struck(hits));
   return true;
+}
+
+/** Where the car met what it ran into: the middle of the voxels it struck (world). */
+function struck(hits: number[]): THREE.Vector3 {
+  const at = new THREE.Vector3();
+  for (const h of hits) at.add(new THREE.Vector3(city.position[3 * h], city.position[3 * h + 1], city.position[3 * h + 2]));
+  return at.divideScalar(hits.length);
+}
+
+/** Damage (a share of a new car's health) a metre a second of speed lost stopping dead, and ploughing through. */
+const STOP_DAMAGE = 0.022;
+const THROUGH_DAMAGE = 0.02;
+
+/**
+ * The car hurt by `amount` (a share of its health) by a blow at `at`: paint and sparks off it, and at nothing
+ * left, wrecked.
+ */
+function hurtCar(amount: number, at: THREE.Vector3): void {
+  const c = car;
+  if (!c || c.health <= 0 || amount < 0.01) return;
+  c.hurt(amount, at);
+  effects.sparks(at.toArray(), Math.round(4 + amount * 40), 6);
+  effects.impact(at.toArray(), 4 + amount * 30, paintFlakes);
+  if (driving) hud.flash(Math.min(0.5, amount * 1.5));
+  if (c.health <= 0) wreckCar();
+}
+const paintFlakes = new THREE.Color(0.5, 0.58, 0.68);
+
+/**
+ * The car wrecked: it goes up (a charge's blast where it stood, wrecking what's round it), whoever's driving is
+ * thrown clear on foot, and a new car waits on the grid.
+ */
+function wreckCar(): void {
+  const c = car!;
+  const at = new THREE.Vector3(c.position.x, c.position.y, CLEARANCE + 0.6);
+  const f = c.forward;
+  if (driving) {
+    setDriving(false);
+    player.velocity.set(-f.y * 5, f.x * 5, 7);
+  }
+  detonate(at, TOOLS[3], player.position.distanceTo(at));
+  placeCar();
+  hud.toast('Wrecked · a new car waits on the grid');
+}
+
+/** A damaged engine smokes, darker the worse it is, and past half its health gone it's on fire. */
+let engineSmokeDue = 0;
+function engineSmoke(dt: number): void {
+  const c = car!;
+  if (c.health > 0.55) return;
+  const damage = (0.55 - c.health) / 0.55;
+  engineSmokeDue -= dt * (0.5 + 2 * damage);
+  if (engineSmokeDue > 0) return;
+  engineSmokeDue = 0.06;
+  effects.engineSmoke(c.engine().toArray(), damage);
 }
 
 /**
@@ -913,13 +982,13 @@ function exhaust(dt: number, throttle: number): void {
   const c = car!;
   const { at, back } = c.exhausts();
   if (c.shifts !== upshifts) {
-    // The afterfire: a flame out of every pipe, a few sparks, a pop, a flare of the bloom and a kick of the camera
+    // The afterfire: a flame out of every pipe, a few sparks, a pop and a flare of the bloom (the car and the
+    // camera carry on smoothly)
     upshifts = c.shifts;
     flames?.fire();
     for (const p of at) effects.sparks(p.toArray(), 2, 3.5);
     sounds.pop(driving ? 4 : eye.distanceTo(c.position));
     view.glow = Math.max(0.6, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value);
-    chase.kick = 1;
   }
   flames?.update(dt, at, back);
   // Under throttle only (clear at idle), a pipe at a time, thinning out at speed where it's left behind at once
@@ -962,8 +1031,7 @@ function chaseView(dt: number): void {
   const speed = Math.abs(c.speed);
   const yaw = chase.yaw + chase.orbit;
   // A gear change nudges the view back a touch (the car surging after the lost beat of drive)
-  chase.kick *= Math.exp(-dt * 7);
-  const dist = 6.4 + Math.min(3, speed * 0.035) + chase.kick * 0.3;
+  const dist = 6.4 + Math.min(3, speed * 0.035);
   const pitch = 0.19 + chase.lift;
   eye.set(p.x - Math.cos(yaw) * dist * Math.cos(pitch), p.y - Math.sin(yaw) * dist * Math.cos(pitch), 1.1 + dist * Math.sin(pitch));
   eye.z = Math.max(0.5, eye.z);
@@ -1000,6 +1068,7 @@ function startEffects(): Effects {
     sparks: (at, count, speed) => particles.sparks(at, count, speed),
     exhaust: (at, amount) => particles.exhaust(at, amount),
     tyreSmoke: (at, amount) => particles.tyreSmoke(at, amount),
+    engineSmoke: (at, damage) => particles.engineSmoke(at, damage),
     update: (dt, camera) => {
       if (sky) {
         sun.copy(sky.sunColor).multiplyScalar(0.45 * sky.sunIntensity());
@@ -1564,6 +1633,12 @@ const smokeTint = new THREE.Color(0.5, 0.5, 0.5);
 /** Tool `t`'s blast at `at`, `distance` m from the player: the damage, and its sound, flash, dust. */
 function detonate(at: THREE.Vector3, t: ToolSpec, distance: number, normal?: ArrayLike<number>): void {
   satellites?.blast(at, t.radius);
+  // The car caught in it (its own rockets too, fired too close)
+  if (car) {
+    const reach = t.radius + 3;
+    const off = at.distanceTo(car.position);
+    if (off < reach) hurtCar(0.45 * (1 - off / reach), at);
+  }
   const result = blast(city, structure, physics, at.toArray(), t.radius, t.push, t.core);
   unsettled = true;
   afterBlast(result, [{ at: at.toArray() }]);
@@ -1941,7 +2016,7 @@ function tick(now: number): void {
   cam.position.copy(eye).add(new THREE.Vector3(wander(1) * trauma * 0.09, wander(2) * trauma * 0.09, wander(3) * trauma * 0.09 - dip));
   const sprinting = playing && keys.has('ShiftLeft') && Math.hypot(player.velocity.x, player.velocity.y) > 6;
   const carSpeed = driving && car ? Math.abs(car.speed) : 0;
-  const fov = driving ? settings.fov + Math.min(16, carSpeed * 0.18) + (keys.has('ShiftLeft') && boostLeft > 0 ? 5 : 0) + chase.kick * 1.5 : aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
+  const fov = driving ? settings.fov + Math.min(16, carSpeed * 0.18) + (keys.has('KeyB') && boostLeft > 0 ? 5 : 0) : aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
   if (Math.abs(cam.fov - fov) > 0.05) {
     cam.fov += (fov - cam.fov) * Math.min(1, dt * 8);
     cam.updateProjectionMatrix();
@@ -1972,10 +2047,12 @@ function tick(now: number): void {
   hand.update(dt, player.walk, player.onGround ? Math.min(1, pace / 9) : 0, sprinting);
   view.glow = Math.max(0.35, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value - dt * 1.5);
   const aim = raycast(city, eye.toArray(), dir.toArray(), driving ? CAR_ROCKET.reach : TOOLS[tool].reach || 3);
-  if (driving && car) hud.speed(car.speed * 3.6, boostLeft, car.gear, loaded.map((t) => Math.max(0, Math.min(1, 1 - (t - simTime) / RELOAD))));
+  if (driving && car) hud.speed(car.speed * 3.6, boostLeft, car.gear, loaded.map((t) => Math.max(0, Math.min(1, 1 - (t - simTime) / RELOAD))), car.health);
   if (car) {
     exhaust(sim, driving && playing ? Math.max(0, driveInput().throttle) : 0);
     tyres(sim);
+    engineSmoke(sim);
+    car.bits.update(sim);
   }
   // Walking up to the car: say how to get in
   const near = !!car && !driving && player.position.distanceTo(car.position) < GET_IN;

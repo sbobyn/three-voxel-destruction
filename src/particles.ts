@@ -509,6 +509,17 @@ export class Particles {
     this.queue([Burst.Tyre, 0.25 + 0.25 * amount, 1, 1, 0.78, 0.85, 1, 0.16 + 0.24 * amount, at[0], at[1], at[2], this.quality.size], [at[0], at[1], at[2]], n);
   }
 
+  /**
+   * A damaged engine's smoke at `at` (`damage` 0..1): grey, going black as it's worse, and flames in it past half.
+   * A puff a call: the caller paces them.
+   */
+  engineSmoke(at: ArrayLike<number>, damage: number): void {
+    const [x, y, z] = [at[0], at[1], at[2]];
+    const grey = 0.42 - 0.34 * damage;
+    this.queue([Burst.Smoulder, 1, 1, 0.5 + 0.5 * damage, grey, grey, grey, 0.35 + 0.35 * damage, x, y, z, this.quality.size], [x, y, z], 1);
+    if (damage > 0.5) this.queue([Burst.Flame, 1, 1, 1, 0.2, 0.2, 0.2, 0.8, x, y, z, this.quality.size], [x, y, z], Math.round(1 + 2 * (damage - 0.5)));
+  }
+
   /** Lingering smoke source (e.g. burning spot) for `seconds`. */
   smoulder(at: ArrayLike<number>, seconds: number): void {
     const p = new THREE.Vector3(at[0], at[1], at[2]);

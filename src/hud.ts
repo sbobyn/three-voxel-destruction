@@ -117,6 +117,10 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 .hud .speedo .pod { width: 26px; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.15); overflow: hidden; }
 .hud .speedo .pod i { display: block; height: 100%; background: #ff5a3d; }
 .hud .speedo .pod.ready i { background: #ffd23d; }
+.hud .speedo .health { height: 6px; width: 150px; margin: 8px auto 0; border-radius: 3px; background: rgba(255,255,255,0.15); overflow: hidden; }
+.hud .speedo .health i { display: block; height: 100%; transition: width 200ms ease-out, background-color 200ms; }
+.hud .speedo .health.low i { animation: low 0.7s ease-in-out infinite; }
+@keyframes low { 50% { opacity: 0.45; } }
 .hud .speedo .boost { height: 4px; width: 120px; margin: 8px auto 0; border-radius: 2px; background: rgba(255,255,255,0.15); overflow: hidden; }
 .hud .speedo .boost i { display: block; height: 100%; background: #ff8a3d; }
 .hud.driving .dock, .hud.driving .tip, .hud.driving .picked { display: none; }
@@ -171,7 +175,7 @@ const DRIVING = [
   ['W / S', 'throttle · brake, reverse'],
   ['A / D', 'steer'],
   ['Space', 'handbrake'],
-  ['Shift', 'boost'],
+  ['B', 'boost'],
   ['Mouse L', 'rockets'],
   ['Mouse R', 'machine guns'],
   ['F', 'get out'],
@@ -236,7 +240,7 @@ export class Hud {
     keys.className = 'keys';
     this.setKeys(ON_FOOT);
     this.speedo.className = 'speedo';
-    this.speedo.innerHTML = `<div class="gear">1</div><div class="v">0</div><div class="u">KM/H</div><div class="boost"><i></i></div><div class="pods"><span>RKT</span><div class="pod"><i></i></div><div class="pod"><i></i></div></div>`;
+    this.speedo.innerHTML = `<div class="gear">1</div><div class="v">0</div><div class="u">KM/H</div><div class="health"><i></i></div><div class="boost"><i></i></div><div class="pods"><span>RKT</span><div class="pod"><i></i></div><div class="pod"><i></i></div></div>`;
     for (const [i, t] of tools.entries()) {
       const slot = document.createElement('div');
       slot.className = 'slot';
@@ -385,7 +389,7 @@ export class Hud {
         <b>F</b><span>fly or walk (walking: Space jump, C crouch, Shift sprint)</span>
         <b>X</b><span>slow motion (the player moves at full speed: fly round a collapse)</span>
         <b>T · R</b><span>${space ? 'turn the sun' : 'time of day'} · rebuild the ${track ? 'track' : space ? 'station' : 'city'}</span>
-        ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · Shift boost · left button: the rockets · right button: the machine guns · F gets out (and back in)</span>' : ''}
+        ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · B boost · left button: the rockets · right button: the machine guns · F gets out (and back in)</span>' : ''}
       </div>
       <div class="row"><span>Look sensitivity</span><input type="range" name="sensitivity" min="0.2" max="3" step="0.05"></div>
       <div class="row"><span>Field of view</span><input type="range" name="fov" min="60" max="110" step="1"></div>
@@ -605,8 +609,15 @@ export class Hud {
     this.setKeys(on ? DRIVING : ON_FOOT);
   }
 
-  /** The speedometer: km/h, the boost left (0..1), the gear, and each rocket launcher's reload (0..1, 1 loaded). */
-  speed(kmh: number, boost: number, gear: number, launchers: number[]): void {
+  /**
+   * The speedometer: km/h, the boost left (0..1), the gear, each rocket launcher's reload (0..1, 1 loaded), and
+   * what's left of the car (0..1: green through amber to red, pulsing when it's nearly gone).
+   */
+  speed(kmh: number, boost: number, gear: number, launchers: number[], health: number): void {
+    const bar = this.speedo.querySelector('.health') as HTMLElement;
+    (bar.firstElementChild as HTMLElement).style.width = `${Math.round(health * 100)}%`;
+    (bar.firstElementChild as HTMLElement).style.backgroundColor = `hsl(${Math.round(health * 120)}, 80%, 52%)`;
+    bar.classList.toggle('low', health < 0.25);
     (this.speedo.querySelector('.v') as HTMLElement).textContent = String(Math.round(Math.abs(kmh)));
     (this.speedo.querySelector('.gear') as HTMLElement).textContent = kmh < -1 ? 'R' : String(gear);
     (this.speedo.querySelector('.boost i') as HTMLElement).style.width = `${Math.round(boost * 100)}%`;

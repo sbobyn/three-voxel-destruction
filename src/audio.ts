@@ -2,6 +2,13 @@
 // low-pass with a sub-bass thump; the hammer a short knock; the blaster a falling chirp; a
 // collapse a long low rumble. Quieter and duller with distance.
 
+/** A tyre's squeal: its oscillators (their pitch as a share of the squeal's, their wave, and how loud). */
+const SQUEAL: [number, OscillatorType, number][] = [
+  [1, 'sawtooth', 0.5],
+  [1.012, 'square', 0.3],
+  [1.5, 'sawtooth', 0.2],
+];
+
 export class Sounds {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -11,8 +18,13 @@ export class Sounds {
   /** Your own suit's sounds, beside the master (its own volume), muffled less: heard through the suit, not the hull. */
   private suit: GainNode | null = null;
   private suitFilter: BiquadFilterNode | null = null;
-  /** The tyres' screech: a squeal and a hiss, their level set each frame they slide. */
-  private screech: { squeal: OscillatorNode; gain: GainNode } | null = null;
+  /** The tyres' screech: its tone's oscillators, the hiss and the scrub, their levels set each frame they slide. */
+  private screech: {
+    out: GainNode;
+    oscillators: { o: OscillatorNode; ratio: number }[];
+    hissLevel: GainNode;
+    scrubLevel: GainNode;
+  } | null = null;
   /** The jets' rush: one looping noise, its level and band set each frame they fire. */
   private jets: { band: BiquadFilterNode; gain: GainNode } | null = null;
   private noise: AudioBuffer | null = null;
@@ -63,50 +75,78 @@ export class Sounds {
   }
 
   /**
-   * Tyres screeching (`amount` 0..1; call each frame they slide): a wavering squeal over the rubber's hiss,
-   * higher and louder the harder they slide. Unless called again it dies away by itself.
+   * Tyres screeching (`amount` 0..1; call each frame they slide). Rubber stick-slipping on tarmac sings: a buzzy,
+   * harmonic tone (a few detuned oscillators, their pitch jittering at random, not a smooth wobble), chattering in
+   * level as the tread grips and lets go, roughened by a little distortion, brightest round 2.6 kHz; under it the
+   * hiss of the rubber and the low scrub. Harder slides are higher, louder and rougher. Unless called again it dies
+   * away by itself.
    */
   skid(amount: number): void {
     const { ctx } = this;
     if (!ctx || !this.master || !this.noise) return;
     if (!this.screech) {
-      // The squeal: a sawtooth whose pitch wavers, through a narrow band; the hiss: noise through a wide one
-      const squeal = ctx.createOscillator();
-      squeal.type = 'sawtooth';
-      const waver = ctx.createOscillator();
-      waver.frequency.value = 7;
-      const depth = ctx.createGain();
-      depth.gain.value = 45;
-      waver.connect(depth).connect(squeal.frequency);
-      const band = ctx.createBiquadFilter();
-      band.type = 'bandpass';
-      band.frequency.value = 1100;
-      band.Q.value = 6;
-      const rubber = ctx.createBufferSource();
-      rubber.buffer = this.noise;
-      rubber.loop = true;
-      const wide = ctx.createBiquadFilter();
-      wide.type = 'bandpass';
-      wide.frequency.value = 2200;
-      wide.Q.value = 0.8;
-      const hiss = ctx.createGain();
-      hiss.gain.value = 0.6;
-      const gain = ctx.createGain();
-      gain.gain.value = 0;
-      squeal.connect(band).connect(gain);
-      rubber.connect(wide).connect(hiss).connect(gain);
-      gain.connect(this.master);
-      squeal.start();
-      waver.start();
-      rubber.start();
-      this.screech = { squeal, gain };
+      const out = ctx.createGain();
+      out.gain.value = 0;
+      out.connect(this.master);
+      const noise = (lowpass: number) => {
+        const n = ctx.createBufferSource();
+        n.buffer = this.noise;
+        n.loop = true;
+        n.start(0, Math.random() * 2);
+        const f = ctx.createBiquadFilter();
+        f.type = 'lowpass';
+        f.frequency.value = lowpass;
+        n.connect(f);
+        return f;
+      };
+      // The tone: detuned oscillators whose pitch jitters (slow noise into their frequency)
+      const tone = ctx.createGain();
+      const jitter = noise(30);
+      const oscillators = SQUEAL.map(([ratio, type, level]) => {
+        const o = ctx.createOscillator();
+        o.type = type;
+        const g = ctx.createGain();
+        g.gain.value = level;
+        o.connect(g).connect(tone);
+        const depth = ctx.createGain();
+        depth.gain.value = 900 * ratio;
+        jitter.connect(depth).connect(o.frequency);
+        o.start();
+        return { o, ratio };
+      });
+      // The chatter: its level fluttering fast and at random as the tread grips and lets go
+      const chatter = ctx.createGain();
+      chatter.gain.value = 0.55;
+      const flutter = ctx.createGain();
+      flutter.gain.value = 6;
+      noise(120).connect(flutter).connect(chatter.gain);
+      // Rough, then brightest round 2.6 kHz (no rumble in the tone, no fizz above it)
+      const rough = ctx.createWaveShaper();
+      rough.curve = Float32Array.from({ length: 1024 }, (_, i) => Math.tanh(((i / 1023) * 2 - 1) * 2.5));
+      const body = ctx.createBiquadFilter();
+      body.type = 'bandpass';
+      body.frequency.value = 2600;
+      body.Q.value = 0.8;
+      tone.connect(chatter).connect(rough).connect(body).connect(out);
+      // The rubber's hiss and the scrub
+      const hiss = ctx.createBiquadFilter();
+      hiss.type = 'bandpass';
+      hiss.frequency.value = 3000;
+      hiss.Q.value = 0.7;
+      const hissLevel = ctx.createGain();
+      noise(20000).connect(hiss).connect(hissLevel).connect(out);
+      const scrubLevel = ctx.createGain();
+      noise(240).connect(scrubLevel).connect(out);
+      this.screech = { out, oscillators, hissLevel, scrubLevel };
     }
     const t = ctx.currentTime;
-    const { squeal, gain } = this.screech;
-    gain.gain.cancelScheduledValues(t);
-    gain.gain.setTargetAtTime(0.05 + 0.1 * amount, t, 0.04);
-    gain.gain.setTargetAtTime(0, t + 0.06, 0.08);
-    squeal.frequency.setTargetAtTime(820 + 260 * amount, t, 0.1);
+    const { out, oscillators, hissLevel, scrubLevel } = this.screech;
+    out.gain.cancelScheduledValues(t);
+    out.gain.setTargetAtTime(0.06 + 0.07 * amount, t, 0.05);
+    out.gain.setTargetAtTime(0, t + 0.06, 0.1);
+    for (const { o, ratio } of oscillators) o.frequency.setTargetAtTime((1400 + 400 * amount) * ratio, t, 0.08);
+    hissLevel.gain.setTargetAtTime(0.15 + 0.3 * amount, t, 0.05);
+    scrubLevel.gain.setTargetAtTime(0.5 + 0.5 * amount, t, 0.05);
   }
 
   /**
