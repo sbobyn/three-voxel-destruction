@@ -6,6 +6,27 @@ can hammer it, cut it with a laser, blow it up with rockets and charges, or thro
 ball. Storeys give way when what carries them is cut, glass shatters, and rubble settles and
 freezes.
 
+**Play it: [three-voxel-destruction.vercel.app](https://three-voxel-destruction.vercel.app)**
+
+![A tower cut through with the laser: the top half topples into the street](docs/media/laser.gif)
+
+Needs a browser with WebGPU: Chrome or Edge, or Safari on iOS 26 and macOS 26. It runs on
+phones and tablets too, with thumb sticks. On first load it times your GPU and picks the
+quality and how many loose pieces the physics carries, so a collapse holds 60 fps (Graphics
+in the menu overrides it).
+
+## Controls
+
+| | |
+|---|---|
+| Mouse | look; left click uses the tool, right click aims |
+| WASD | move; Space / E up, Q / C down (flying), Shift fast, Alt slow |
+| Scroll, or hold Tab | switch tools: hammer, laser, rocket, charge, wrecking ball |
+| F | fly or walk (walking: Space jumps, C crouches, Shift sprints) |
+| X | slow motion |
+| T, R | time of day, rebuild the city |
+| Esc | menu (sensitivity, field of view, graphics, sound) |
+
 ## Running it
 
 ```sh
@@ -26,7 +47,7 @@ it runs its own compute pass over the bodies (blasts). It depends on the publish
 
 The city is z-up (the solver's `up` is set to `REF_UP`).
 
-## Credits
+## Credits and license
 
 Textures and skies: [Poly Haven](https://polyhaven.com), CC0 (see `public/textures/CREDITS.md`
-and `public/hdri/CREDITS.md`).
+and `public/hdri/CREDITS.md`). The code is MIT (`LICENSE`).

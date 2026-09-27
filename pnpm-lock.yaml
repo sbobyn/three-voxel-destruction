@@ -12,8 +12,8 @@ importers:
         specifier: 0.186.0
         version: 0.186.0
       three-avbd:
-        specifier: ^0.1.0
-        version: 0.1.0(three@0.186.0)
+        specifier: ^0.2.0
+        version: 0.2.0(three@0.186.0)
     devDependencies:
       '@types/node':
         specifier: ^25.0.0
@@ -284,8 +284,8 @@ packages:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
 
-  three-avbd@0.1.0:
-    resolution: {integrity: sha512-ttzYaLkRdO8uouEVP87jZjRpikREepVEOSMFQUGTwUNTfeLYVrByPH/T4WPs1taowg2i32hricb7TN5Byh/Q5Q==}
+  three-avbd@0.2.0:
+    resolution: {integrity: sha512-m1Lx0D/d5aUJpByrmiO4f3XgA99YP1Slz2506eRe56h/PvR9WcJ5ifKbOWudE/bX5zHS3kPYdIbwowgSdZq5Bw==}
     peerDependencies:
       three: '>=0.186.0'
 
@@ -527,7 +527,7 @@ snapshots:
 
   source-map-js@1.2.1: {}
 
-  three-avbd@0.1.0(three@0.186.0):
+  three-avbd@0.2.0(three@0.186.0):
     dependencies:
       three: 0.186.0
 

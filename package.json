@@ -2,6 +2,7 @@
   "name": "three-voxel-destruction",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.18.0",
   "scripts": {
@@ -16,7 +17,7 @@
   },
   "dependencies": {
     "three": "0.186.0",
-    "three-avbd": "^0.1.0"
+    "three-avbd": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",

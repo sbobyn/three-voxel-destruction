@@ -1,6 +1,7 @@
 # Textures
 
-All from [Poly Haven](https://polyhaven.com), CC0 (public domain), 1k JPEG, colour (`diff`),
+All from [Poly Haven](https://polyhaven.com), CC0 (public domain), 1k, re-encoded from their JPEGs
+as WebP (`cwebp -q 90 -m 6 -sharp_yuv`: 3.5 MB for the set instead of 11.7), colour (`diff`),
 OpenGL normal (`nor_gl`) and packed ambient occlusion / roughness / metalness (`arm`) maps:
 
 | Set | Photography / processing |

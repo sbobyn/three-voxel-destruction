@@ -80,11 +80,14 @@ export class Loader {
     this.error.innerHTML = insecure
       ? `Browsers only allow WebGPU on secure pages. Open this page over https:// (or on localhost on the computer running it).<small></small>`
       : gpu
-      ? `This browser or device can't run Voxel City: it needs WebGPU. Try the latest Chrome or Edge, or Safari on iOS 26 or macOS 26 (on older iOS, turn on WebGPU in Settings › Safari › Advanced › Feature Flags).<small></small>`
+      ? `This browser or device can't run Voxel City: it needs WebGPU. Try the latest Chrome or Edge, or Safari on iOS 26 or macOS 26 (on older iOS, turn on WebGPU in Settings › Safari › Advanced › Feature Flags). Meanwhile, <a href="${REPO}">watch it and read the code</a>.<small></small>`
       : `Something went wrong while starting. Reloading the page may help.<small></small>`;
     (this.error.querySelector('small') as HTMLElement).textContent = message;
   }
 }
+
+/** Where the code and a clip of it are, for a browser that can't run it. */
+const REPO = 'https://github.com/sbobyn/three-voxel-destruction';
 
 /** Wait until the page has painted (two frames: the change is on screen), or a moment if it can't (a hidden tab never paints). */
 export function paint(): Promise<void> {
