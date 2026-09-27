@@ -7,7 +7,7 @@
 // the station, composited as the layer's premultiplied radiance plus the background times its transmittance.
 
 import * as THREE from 'three/webgpu';
-import { acos, atan, dot, float, log, max, mx_noise_float, normalize, sin, smoothstep, uniform, vec3 } from 'three/tsl';
+import { acos, atan, dot, float, log, max, mix, mx_noise_float, normalize, sin, smoothstep, uniform, vec3 } from 'three/tsl';
 import { createCloudLayer } from './clouds/layer.ts';
 import { PERIODS } from './clouds/model.ts';
 import { BASE_SIZE, DETAIL_SIZE } from './clouds/noise.ts';
@@ -22,7 +22,7 @@ import { generateNoise, makeVolumeTexture } from './clouds/noise-gpu.ts';
  */
 const EARTH_KM = 900;
 /** The cloud noise, coarser than the layer's own: bigger clouds. */
-const NOISE_SCALE = 0.4;
+const NOISE_SCALE = 0.3;
 /**
  * Cyclones: where their eyes are on the Earth (directions from its middle, Earth-fixed, as it's turned at the start),
  * and how far their bands reach (km). The first is ahead of the station, coming towards it as the Earth turns.
@@ -49,9 +49,11 @@ export class OrbitClouds {
     this.base = makeVolumeTexture(new Uint8Array(4 * BASE_SIZE ** 3), BASE_SIZE);
     this.detail = makeVolumeTexture(new Uint8Array(4 * DETAIL_SIZE ** 3), DETAIL_SIZE);
     // Where the clouds are, on the Earth itself (the offsets turned into Earth-fixed kilometres: the clouds turn with
-    // it): broad systems some 300 km across, solid, and nothing between them (thin cover made scatters of tiny
-    // puffs); and cyclones, spirals of cloud bands wound into a dense eyewall round a clear eye. The weather within
-    // (the layer's own weather field repeats every 120 km, which would tile the view) only heaps and thins a little.
+    // it). The layer keeps whatever of its cloud noise rises above 1 - cover, so cover is what makes a cloud type:
+    // near 0.8 every cell merges into one flat sheet, near 0.35 only scattered puffs are left. So weather systems
+    // (fronts, warped and drawn out east-west, some 400 km across) with a quick fringe of broken cells, then broken
+    // to closed decks within (0.56 to 0.74: cells that join up, with gaps and texture); cyclones, spirals of cloud
+    // bands wound into a dense eyewall round a clear eye, the air between their bands mostly clear; nothing between.
     const world = (offset: THREE.Node<'vec3'>) => this.weatherOrigin.add(this.weatherFrame.mul(offset));
     const cyclone = (w: THREE.Node<'vec3'>, at: THREE.Vector3) => {
       const c = at.clone().normalize();
@@ -61,16 +63,20 @@ export class OrbitClouds {
       const r = acos(dot(p, vec3(c.x, c.y, c.z)).clamp(-1, 1)).mul(EARTH_KM);
       const around = atan(dot(p, vec3(t2.x, t2.y, t2.z)), dot(p, vec3(t1.x, t1.y, t1.z)));
       // A hurricane: a dense central disc round a small clear eye, and bands spiralling out of it (two arms,
-      // logarithmic spirals), thinning towards the edge
-      const bands = smoothstep(0.3, 0.85, sin(around.mul(2).add(log(r.add(4)).mul(7)))).mul(smoothstep(CYCLONE, CYCLONE * 0.3, r));
-      const disc = smoothstep(80, 45, r);
+      // logarithmic spirals), thinning and breaking up towards the edge
+      const arm = sin(around.mul(2).add(log(r.add(4)).mul(7)));
+      const bands = smoothstep(0.1, 0.8, arm).mul(mix(0.72, 0.45, smoothstep(60, CYCLONE, r))).mul(smoothstep(CYCLONE, CYCLONE * 0.4, r));
+      const disc = smoothstep(80, 45, r).mul(0.78);
       const eye = smoothstep(7, 14, r);
-      // And the clear air round it (a hurricane sweeps its surroundings clear: its spiral stands out on open sea)
-      return { cover: max(bands, disc).mul(eye), zone: smoothstep(CYCLONE * 1.35, CYCLONE, r) };
+      return { cover: max(bands, disc).mul(eye), zone: smoothstep(CYCLONE * 1.05, CYCLONE * 0.75, r) };
     };
     const coverage = (offset: THREE.Node<'vec3'>) => {
-      const w = world(offset);
-      const n = mx_noise_float(w.mul(1 / 330)).mul(0.75).add(mx_noise_float(w.mul(1 / 120)).mul(0.25));
+      const w = world(offset).toVar();
+      // Fronts: the broad field's domain warped (so its edges curl) and squashed along the spin axis (x: north-south
+      // here), so systems are drawn out east-west as the winds draw them
+      const warp = vec3(mx_noise_float(w.mul(1 / 500)), mx_noise_float(w.mul(1 / 500).add(17)), mx_noise_float(w.mul(1 / 500).add(31))).mul(160);
+      const q = w.add(warp).mul(vec3(1 / 260, 1 / 480, 1 / 480));
+      const n = mx_noise_float(q).mul(0.75).add(mx_noise_float(w.mul(1 / 110)).mul(0.25)).toVar();
       let storms = cyclone(w, CYCLONES[0]).cover;
       let zone = cyclone(w, CYCLONES[0]).zone;
       for (const c of CYCLONES.slice(1)) {
@@ -78,22 +84,25 @@ export class OrbitClouds {
         storms = max(storms, one.cover);
         zone = max(zone, one.zone);
       }
-      const systems = smoothstep(0.08, 0.3, n).mul(0.8).mul(float(1).sub(zone));
-      return max(systems, storms.mul(0.9));
+      const inside = smoothstep(-0.12, -0.02, n);
+      const systems = inside.mul(mix(0.56, 0.74, smoothstep(-0.02, 0.35, n))).mul(float(1).sub(zone.mul(0.85)));
+      return max(systems, storms);
     };
+    // The weather within: the cover heaped and thinned over some 40 km (the layer adds (weather - 0.5) * 0.8), so a
+    // deck has thicker and thinner parts and a broken field clumps. (Not the layer's own, which repeats every 120 km.)
     const weather = (offset: THREE.Node<'vec3'>) => {
       const w = world(offset);
-      return mx_noise_float(w.mul(1 / 80)).mul(0.2).add(0.5);
+      return mx_noise_float(w.mul(1 / 40)).mul(0.16).add(mx_noise_float(w.mul(1 / 13)).mul(0.06)).add(0.5);
     };
     this.layer = createCloudLayer({ base: this.base, detail: this.detail, worldFrame: true, coverage, weather });
     const u = this.layer.uniforms;
     u.radius.value = EARTH_KM;
-    // A deep layer, dense: towering heaps, not a thin deck
+    // A deep layer: heaps with tops and sides (deeper still, a deck's edge stood up as a sunlit wall with a dark side)
     u.bottom.value = 1.5;
-    u.top.value = 7;
-    u.density.value = 30;
-    // (Less of the fine erosion: whole heaps, not frayed scatters)
-    u.erosion.value = 0.24;
+    u.top.value = 5.5;
+    u.density.value = 24;
+    // The fine erosion: billowed edges, not frayed scatters
+    u.erosion.value = 0.3;
     // The planet adapter's display settings, at its orbit quality
     u.early.value = 1;
     u.skip.value = 1;
@@ -156,7 +165,8 @@ export class OrbitClouds {
     u.aspect.value = camera.aspect;
     u.sun.value.copy(sun).applyMatrix3(toLocal).normalize();
     u.sunColour.value.set(sunColour.r, sunColour.g, sunColour.b).multiplyScalar(brightness);
-    u.ambient.value.set(0.16, 0.2, 0.27).multiplyScalar(brightness * 0.6);
+    // The sky's blue from above and the Earth's light from below (seen from orbit, a cloud's shaded side isn't dark)
+    u.ambient.value.set(0.2, 0.22, 0.26).multiplyScalar(brightness * 1.1);
     // The noise is fixed to the Earth, which turns by `spin`: the local frame and the camera's place in Earth-fixed axes
     const unspin = new THREE.Matrix3().setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(spin.clone().invert()));
     const fixedFrame = unspin.clone().multiply(frame);

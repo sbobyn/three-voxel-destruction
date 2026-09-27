@@ -63,14 +63,14 @@ const CIRRUS_HEIGHT = 60;
 function cirrusShell(centre: THREE.Vector3, sun: THREE.UniformNode<'vec3', THREE.Vector3>): THREE.Mesh {
   const material = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, fog: false });
   const p = positionLocal;
-  const streaks = mx_noise_float(p.mul(vec3(0.0035, 0.03, 0.03))).mul(0.6).add(mx_noise_float(p.mul(vec3(0.009, 0.08, 0.08))).mul(0.3)).add(mx_noise_float(p.mul(0.2)).mul(0.1));
-  const patches = smoothstep(0.1, 0.45, mx_noise_float(p.mul(0.0022)).add(mx_noise_float(p.mul(0.007)).mul(0.3)));
+  const streaks = mx_noise_float(p.mul(vec3(0.02, 0.006, 0.006))).mul(0.6).add(mx_noise_float(p.mul(vec3(0.05, 0.016, 0.016))).mul(0.3)).add(mx_noise_float(p.mul(0.2)).mul(0.1));
+  const patches = smoothstep(0.25, 0.55, mx_noise_float(p.mul(0.0022)).add(mx_noise_float(p.mul(0.007)).mul(0.3)));
   const n = normalize(positionWorld.sub(vec3(centre.x, centre.y, centre.z)));
   const view = normalize(cameraPosition.sub(positionWorld));
   const edge = smoothstep(0.02, 0.25, dot(n, view));
   const lit = clamp(dot(n, sun).mul(1.2).add(0.1), 0, 1);
   material.colorNode = vec3(1.0, 1.0, 1.02).mul(lit.mul(1.1).add(0.03)) as unknown as THREE.Node<'color'>;
-  material.opacityNode = smoothstep(0.05, 0.55, streaks).mul(patches).mul(edge).mul(0.5) as unknown as THREE.Node<'float'>;
+  material.opacityNode = smoothstep(0.05, 0.7, streaks).mul(patches).mul(edge).mul(0.35) as unknown as THREE.Node<'float'>;
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS + CIRRUS_HEIGHT, 160, 80), material);
   mesh.position.copy(centre);
   mesh.renderOrder = 1;
@@ -78,7 +78,7 @@ function cirrusShell(centre: THREE.Vector3, sun: THREE.UniformNode<'vec3', THREE
 }
 
 /** The clouds' sun and sky light, against the Earth's surface as the Earth shader lights it. */
-const CLOUD_LIGHT = 1.4;
+const CLOUD_LIGHT = 0.8;
 
 export class SpaceSky {
   readonly object = new THREE.Group();
