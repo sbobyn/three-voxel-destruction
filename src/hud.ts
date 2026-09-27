@@ -109,6 +109,18 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 }
 .hud .stats { position: absolute; right: 14px; top: 12px; font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; text-shadow: 0 1px 3px #000; opacity: 0.85; white-space: pre; }
 .hud .flash { position: absolute; inset: 0; background: radial-gradient(circle, rgba(255,210,150,0.35), rgba(255,140,60,0) 70%); opacity: 0; transition: opacity 400ms ease-out; }
+.hud .speedo { position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%); text-align: center; text-shadow: 0 2px 6px #000; display: none; }
+.hud .speedo .v { font: 800 44px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -0.02em; }
+.hud .speedo .u { font-size: 11px; opacity: 0.7; letter-spacing: 0.12em; }
+.hud .speedo .gear { position: absolute; left: -34px; top: 4px; font: 800 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace; opacity: 0.8; }
+.hud .speedo .pods { display: flex; gap: 6px; justify-content: center; margin-top: 6px; font-size: 10px; letter-spacing: 0.1em; opacity: 0.85; align-items: center; }
+.hud .speedo .pod { width: 26px; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.15); overflow: hidden; }
+.hud .speedo .pod i { display: block; height: 100%; background: #ff5a3d; }
+.hud .speedo .pod.ready i { background: #ffd23d; }
+.hud .speedo .boost { height: 4px; width: 120px; margin: 8px auto 0; border-radius: 2px; background: rgba(255,255,255,0.15); overflow: hidden; }
+.hud .speedo .boost i { display: block; height: 100%; background: #ff8a3d; }
+.hud.driving .dock, .hud.driving .tip, .hud.driving .picked { display: none; }
+.hud.driving .speedo { display: block; }
 .hud .keys { position: absolute; left: 14px; top: 12px; font-size: 11.5px; line-height: 1.6; opacity: 0.7; text-shadow: 0 1px 3px #000; }
 .hud .keys b { display: inline-block; min-width: 18px; padding: 0 4px; border-radius: 4px; background: rgba(255,255,255,0.14); text-align: center; margin-right: 4px; font-weight: 600; }
 .menu { position: fixed; inset: 0; z-index: 10; overflow-y: auto; display: flex; align-items: safe center; justify-content: center; padding: 12px 0; box-sizing: border-box; background: radial-gradient(ellipse at center, rgba(10,12,16,0.55), rgba(6,7,10,0.85)); backdrop-filter: blur(4px); }
@@ -118,17 +130,54 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 .menu p { margin: 0 0 18px; opacity: 0.7; font-size: 13.5px; line-height: 1.5; }
 .menu button.play { width: 100%; padding: 13px; border: 0; border-radius: 10px; background: #ff8a3d; color: #1a0f06; font: 700 15px inherit; font-family: inherit; cursor: pointer; }
 .menu button.play:hover { background: #ff9d57; }
+.menu .buttons { display: flex; gap: 8px; }
 .menu .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 12px 0; font-size: 13px; }
 .menu .row input[type=range] { width: 200px; accent-color: #ff8a3d; }
 .menu .row select { background: #2a2d35; color: inherit; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 4px 8px; font: inherit; }
 .menu .tune { font-size: 12px; opacity: 0.75; margin-top: -4px; }
 .menu .retune { background: none; border: 1px solid rgba(255,255,255,0.2); color: inherit; border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; }
 .menu .retune:hover { border-color: #ff8a3d; }
+.topbar { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 11; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; background: rgba(14,16,20,0.6); border: 1px solid rgba(255,255,255,0.12); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-size: 13px; font-weight: 600; user-select: none; }
+.topbar label { display: flex; align-items: center; gap: 6px; padding-left: 10px; color: rgba(255,255,255,0.55); }
+.topbar select { appearance: none; -webkit-appearance: none; padding: 6px 28px 6px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.14); color: #fff; font: inherit; cursor: pointer; background: rgba(255,255,255,0.06) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23ffffff' stroke-opacity='0.7' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center; transition: border-color 120ms; }
+.topbar select:hover, .topbar select:focus-visible { border-color: #ff8a3d; outline: none; }
+.topbar option { color: #fff; background: #16181e; }
+.topbar button { padding: 6px 12px; border-radius: 8px; border: 0; background: none; color: rgba(255,255,255,0.72); font: inherit; cursor: pointer; white-space: nowrap; transition: background 120ms, color 120ms; }
+.topbar button:hover { color: #fff; background: rgba(255,255,255,0.08); }
+.topbar .sep { width: 1px; height: 18px; margin: 0 4px; background: rgba(255,255,255,0.15); }
+.topbar kbd { margin-left: 6px; padding: 0 5px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.25); font: inherit; font-size: 11px; opacity: 0.7; }
+/* Touch: at the top left, level with the fly and pause buttons in the top right corner */
+body.touch .topbar { top: calc(env(safe-area-inset-top) + 12px); left: calc(env(safe-area-inset-left) + 12px); transform: none; font-size: 12px; }
+body.touch .topbar button { padding: 6px 9px; }
+body.touch .topbar kbd { display: none; }
 .menu .grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 14px 0 18px; font-size: 12.5px; opacity: 0.8; }
 .menu .grid b { font-weight: 600; opacity: 0.9; }
 .hud .toast { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); padding: 6px 14px; border-radius: 8px; background: rgba(14,16,20,0.6); font-size: 13px; font-weight: 600; opacity: 0; transition: opacity 300ms; }
 .loading { position: fixed; left: 50%; top: 58%; transform: translateX(-50%); font-size: 13px; opacity: 0.7; }
 `;
+
+/** The key help on foot, and in the car. */
+const ON_FOOT = [
+  ['WASD', 'move'],
+  ['Mouse', 'look · L use · R aim'],
+  ['Space / Q', 'up / down (fly), jump (walk)'],
+  ['Shift', 'boost · Alt creep'],
+  ['Wheel', 'switch tool · hold Tab: tool wheel'],
+  ['F', 'fly / walk'],
+  ['X', 'slow motion'],
+  ['Esc', 'menu'],
+];
+const DRIVING = [
+  ['W / S', 'throttle · brake, reverse'],
+  ['A / D', 'steer'],
+  ['Space', 'handbrake'],
+  ['Shift', 'boost'],
+  ['Mouse L', 'rockets'],
+  ['Mouse R', 'machine guns'],
+  ['F', 'get out'],
+  ['X', 'slow motion'],
+  ['Esc', 'menu'],
+];
 
 export class Hud {
   private readonly root = document.createElement('div');
@@ -151,6 +200,8 @@ export class Hud {
   private readonly wheelAim = { x: 0, y: 0 };
   private wheelOn = -1;
   private current = 0;
+  /** Called by the menu's Reset button: the scene as it started. */
+  onReset: () => void = () => {};
   /** Called when a slot or a wheel item is clicked or tapped. */
   onPick: (i: number) => void = () => {};
   /** Called as a finger or the mouse drags the carousel sideways (tools, towards the next one positive). */
@@ -163,6 +214,8 @@ export class Hud {
   private readonly slots: HTMLElement[] = [];
   private readonly toastEl = document.createElement('div');
   private toastTimer = 0;
+  private readonly keysEl = document.createElement('div');
+  private readonly speedo = document.createElement('div');
 
   readonly tools: Tool[];
   readonly settings: Settings;
@@ -179,20 +232,11 @@ export class Hud {
     this.tip.className = 'tip';
     this.statsLine.className = 'stats';
     this.flashEl.className = 'flash';
-    const keys = document.createElement('div');
+    const keys = this.keysEl;
     keys.className = 'keys';
-    keys.innerHTML = [
-      ['WASD', 'move'],
-      ['Mouse', 'look · L use · R aim'],
-      ['Space / Q', 'up / down (fly), jump (walk)'],
-      ['Shift', 'boost · Alt creep'],
-      ['Wheel', 'switch tool · hold Tab: tool wheel'],
-      ['F', 'fly / walk'],
-      ['X', 'slow motion'],
-      ['Esc', 'menu'],
-    ]
-      .map(([k, v]) => `<b>${k}</b>${v}`)
-      .join('<br>');
+    this.setKeys(ON_FOOT);
+    this.speedo.className = 'speedo';
+    this.speedo.innerHTML = `<div class="gear">1</div><div class="v">0</div><div class="u">KM/H</div><div class="boost"><i></i></div><div class="pods"><span>RKT</span><div class="pod"><i></i></div><div class="pod"><i></i></div></div>`;
     for (const [i, t] of tools.entries()) {
       const slot = document.createElement('div');
       slot.className = 'slot';
@@ -281,7 +325,7 @@ export class Hud {
     this.wheelPointer.className = 'pointer';
     this.wheel.append(this.wheelCentre, this.wheelPointer);
     this.toastEl.className = 'toast';
-    this.root.append(this.flashEl, this.cross, this.dock, this.tip, this.picked, this.wheel, this.statsLine, keys, this.toastEl);
+    this.root.append(this.flashEl, this.cross, this.dock, this.tip, this.picked, this.wheel, this.statsLine, keys, this.speedo, this.toastEl);
     let learn = true;
     try {
       learn = !localStorage.getItem('city.switched');
@@ -306,9 +350,26 @@ export class Hud {
     document.body.append(this.root);
 
     this.menu.className = 'menu';
+    // Which scene, and links to each (the page's other parameters kept)
+    const scene = new URLSearchParams(location.search).get('scene');
+    const track = scene === 'track';
+    const space = scene === 'space';
+    const link = (scene: string | null) => {
+      const q = new URLSearchParams(location.search);
+      if (scene) q.set('scene', scene);
+      else q.delete('scene');
+      const text = q.toString();
+      return text ? `?${text}` : location.pathname;
+    };
     this.menu.innerHTML = `<div class="card">
-      <h1>Voxel City</h1>
-      <p>Every one of the city's voxels is a body in the AVBD solver, running on your GPU. Knock a hole in a tower and whatever it held up comes down.</p>
+      <h1>${track ? 'Voxel Circuit' : space ? 'Voxel Orbit' : 'Voxel City'}</h1>
+      <p>${
+        track
+          ? 'A race car on a circuit where every wall, stand and tyre is voxels in the AVBD solver, on your GPU. Drive through them, open up the machine guns and rockets, or get out and take the place apart on foot.'
+          : space
+            ? 'A space station in orbit, every truss, module and solar wing voxels in the AVBD solver, on your GPU, with no gravity. Cut a wing loose and it drifts off; blow a module apart and it scatters into the dark.'
+            : "Every one of the city's voxels is a body in the AVBD solver, running on your GPU. Knock a hole in a tower and whatever it held up comes down."
+      }</p>
       <div class="grid tap">
         <b>Left thumb</b><span>move · push past the ring to sprint</span>
         <b>Right thumb</b><span>drag anywhere to look</span>
@@ -323,7 +384,8 @@ export class Hud {
         <b>Tools</b><span>scroll to switch, or hold Tab for the tool wheel</span>
         <b>F</b><span>fly or walk (walking: Space jump, C crouch, Shift sprint)</span>
         <b>X</b><span>slow motion (the player moves at full speed: fly round a collapse)</span>
-        <b>T · R</b><span>time of day · rebuild the city</span>
+        <b>T · R</b><span>${space ? 'turn the sun' : 'time of day'} · rebuild the ${track ? 'track' : space ? 'station' : 'city'}</span>
+        ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · Shift boost · left button: the rockets · right button: the machine guns · F gets out (and back in)</span>' : ''}
       </div>
       <div class="row"><span>Look sensitivity</span><input type="range" name="sensitivity" min="0.2" max="3" step="0.05"></div>
       <div class="row"><span>Field of view</span><input type="range" name="fov" min="60" max="110" step="1"></div>
@@ -335,7 +397,7 @@ export class Hud {
       <div class="row"><span>Sun rays</span><input type="checkbox" name="sunRays"></div>
       <div class="row"><span>Graphics</span><select name="graphics"><option value="auto">Auto (tuned for this device)</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
       <div class="row tune"><span class="tuned"></span><button class="retune">Re-tune</button></div>
-      <button class="play">Play</button>
+      <div class="buttons"><button class="play">Play</button></div>
     </div>`;
     document.body.append(this.menu);
     this.loading.className = 'loading';
@@ -363,6 +425,17 @@ export class Hud {
       onChange();
     });
     (this.menu.querySelector('.play') as HTMLButtonElement).addEventListener('click', onPlay);
+    // The bar across the top: which scene (a choice of them), and the scene as it started. Above the menu too
+    // (with the pointer locked in play it can't be clicked: there it shows where you are, and R resets)
+    const bar = document.createElement('nav');
+    bar.className = 'topbar';
+    const current = track ? 'track' : space ? 'space' : '';
+    const option = (value: string, name: string) => `<option value="${value}"${value === current ? ' selected' : ''}>${name}</option>`;
+    bar.innerHTML = `<label>Scene<select>${option('', 'City')}${option('track', 'Race track')}${option('space', 'Space station')}</select></label><span class="sep"></span><button class="reset" title="The scene as it started">Reset<kbd>R</kbd></button>`;
+    const choice = bar.querySelector('select') as HTMLSelectElement;
+    choice.addEventListener('change', () => location.assign(link(choice.value || null)));
+    (bar.querySelector('.reset') as HTMLButtonElement).addEventListener('click', () => this.onReset());
+    document.body.append(bar);
   }
 
   /** What the device tuning chose, shown under the Graphics setting. */
@@ -519,6 +592,29 @@ export class Hud {
 
   stats(text: string): void {
     this.statsLine.textContent = text;
+  }
+
+  /** The key help, top left: [key, what] rows. */
+  setKeys(rows: string[][]): void {
+    this.keysEl.innerHTML = rows.map(([k, v]) => `<b>${k}</b>${v}`).join('<br>');
+  }
+
+  /** Driving: the speedometer and the car's keys instead of the tool bar (the track). */
+  setDriving(on: boolean): void {
+    this.root.classList.toggle('driving', on);
+    this.setKeys(on ? DRIVING : ON_FOOT);
+  }
+
+  /** The speedometer: km/h, the boost left (0..1), the gear, and each rocket launcher's reload (0..1, 1 loaded). */
+  speed(kmh: number, boost: number, gear: number, launchers: number[]): void {
+    (this.speedo.querySelector('.v') as HTMLElement).textContent = String(Math.round(Math.abs(kmh)));
+    (this.speedo.querySelector('.gear') as HTMLElement).textContent = kmh < -1 ? 'R' : String(gear);
+    (this.speedo.querySelector('.boost i') as HTMLElement).style.width = `${Math.round(boost * 100)}%`;
+    this.speedo.querySelectorAll('.pod').forEach((pod, k) => {
+      const f = launchers[k] ?? 1;
+      (pod.firstElementChild as HTMLElement).style.width = `${Math.round(f * 100)}%`;
+      pod.classList.toggle('ready', f >= 1);
+    });
   }
 
   /** A warm flash over the screen, stronger for nearer, bigger blasts (0..1). */

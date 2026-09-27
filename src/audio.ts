@@ -5,35 +5,137 @@
 export class Sounds {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  /** After the master: a low-pass that muffles everything (in space), and a low shelf that keeps its weight. */
+  private muffle: BiquadFilterNode | null = null;
+  private body: BiquadFilterNode | null = null;
+  /** Your own suit's sounds, beside the master (its own volume), muffled less: heard through the suit, not the hull. */
+  private suit: GainNode | null = null;
+  private suitFilter: BiquadFilterNode | null = null;
+  /** The tyres' screech: a squeal and a hiss, their level set each frame they slide. */
+  private screech: { squeal: OscillatorNode; gain: GainNode } | null = null;
+  /** The jets' rush: one looping noise, its level and band set each frame they fire. */
+  private jets: { band: BiquadFilterNode; gain: GainNode } | null = null;
   private noise: AudioBuffer | null = null;
   volume = 0.7;
+  /**
+   * Heard in space: no air to carry it, so what reaches you comes through the station's hull and your suit, dull
+   * and low (everything low-passed, the lows kept up).
+   */
+  muffled = false;
 
   /** Start the audio (browsers only allow it after a click). */
   resume(): void {
     if (!this.ctx) {
       this.ctx = new AudioContext();
       this.master = this.ctx.createGain();
-      this.master.connect(this.ctx.destination);
+      this.muffle = this.ctx.createBiquadFilter();
+      this.body = this.ctx.createBiquadFilter();
+      this.body.type = 'lowshelf';
+      this.body.frequency.value = 150;
+      this.master.connect(this.muffle).connect(this.body).connect(this.ctx.destination);
+      this.suit = this.ctx.createGain();
+      this.suitFilter = this.ctx.createBiquadFilter();
+      this.suit.connect(this.suitFilter).connect(this.body);
       const n = this.ctx.sampleRate * 3;
       this.noise = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
       const d = this.noise.getChannelData(0);
       for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
     }
     void this.ctx.resume();
-    this.master!.gain.value = this.volume;
+    this.master!.gain.value = this.suit!.gain.value = this.volume;
+    this.suitFilter!.frequency.value = this.muffled ? 500 : this.ctx.sampleRate / 2;
+    this.muffle!.frequency.value = this.muffled ? 380 : this.ctx.sampleRate / 2;
+    this.body!.gain.value = this.muffled ? 4 : 0;
   }
 
   /** Everything played, as a stream too (for recording the game with its sound). */
   tap(): MediaStream | null {
     if (!this.ctx || !this.master) return null;
     const out = this.ctx.createMediaStreamDestination();
-    this.master.connect(out);
+    this.body!.connect(out);
     return out.stream;
   }
 
   setVolume(v: number): void {
     this.volume = v;
     if (this.master) this.master.gain.value = v;
+    if (this.suit) this.suit.gain.value = v;
+  }
+
+  /**
+   * Tyres screeching (`amount` 0..1; call each frame they slide): a wavering squeal over the rubber's hiss,
+   * higher and louder the harder they slide. Unless called again it dies away by itself.
+   */
+  skid(amount: number): void {
+    const { ctx } = this;
+    if (!ctx || !this.master || !this.noise) return;
+    if (!this.screech) {
+      // The squeal: a sawtooth whose pitch wavers, through a narrow band; the hiss: noise through a wide one
+      const squeal = ctx.createOscillator();
+      squeal.type = 'sawtooth';
+      const waver = ctx.createOscillator();
+      waver.frequency.value = 7;
+      const depth = ctx.createGain();
+      depth.gain.value = 45;
+      waver.connect(depth).connect(squeal.frequency);
+      const band = ctx.createBiquadFilter();
+      band.type = 'bandpass';
+      band.frequency.value = 1100;
+      band.Q.value = 6;
+      const rubber = ctx.createBufferSource();
+      rubber.buffer = this.noise;
+      rubber.loop = true;
+      const wide = ctx.createBiquadFilter();
+      wide.type = 'bandpass';
+      wide.frequency.value = 2200;
+      wide.Q.value = 0.8;
+      const hiss = ctx.createGain();
+      hiss.gain.value = 0.6;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      squeal.connect(band).connect(gain);
+      rubber.connect(wide).connect(hiss).connect(gain);
+      gain.connect(this.master);
+      squeal.start();
+      waver.start();
+      rubber.start();
+      this.screech = { squeal, gain };
+    }
+    const t = ctx.currentTime;
+    const { squeal, gain } = this.screech;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setTargetAtTime(0.05 + 0.1 * amount, t, 0.04);
+    gain.gain.setTargetAtTime(0, t + 0.06, 0.08);
+    squeal.frequency.setTargetAtTime(820 + 260 * amount, t, 0.1);
+  }
+
+  /**
+   * The suit's jets (`strength` 0..1; call each frame they fire): a soft, low rush of gas while they do, swelling
+   * a little with the push. Unless called again it dies away by itself (so it stops with the frames).
+   */
+  jet(strength: number): void {
+    const { ctx } = this;
+    if (!ctx || !this.suit || !this.noise) return;
+    if (!this.jets) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.loop = true;
+      src.playbackRate.value = 0.7;
+      const band = ctx.createBiquadFilter();
+      band.type = 'bandpass';
+      band.Q.value = 0.7;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(band).connect(gain).connect(this.suit);
+      src.start();
+      this.jets = { band, gain };
+    }
+    const t = ctx.currentTime;
+    const { band, gain } = this.jets;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setTargetAtTime(0.03 + 0.04 * strength, t, 0.05);
+    gain.gain.setTargetAtTime(0, t + 0.03, 0.04);
+    band.frequency.setTargetAtTime(220 + 100 * strength, t, 0.1);
   }
 
   /** Noise through a low-pass falling from `from` to `to` Hz over `seconds`, at `gain`. */
@@ -194,6 +296,78 @@ export class Sounds {
   }
 
   /** The laser: a hum while it fires (start with true, stop with false), crackling where it burns. */
+  /**
+   * The race car's engine, running while it's there: `update` it each frame with the revs
+   * (0 idle to 1 the limiter: car.ts climbs them through its gears), the throttle (0..1), how
+   * fast it's sliding sideways (m/s) and how far off the listener is (m). Two detuned saws and
+   * one an octave down, through a low-pass that opens with the throttle. The tyres screech
+   * (band-passed noise) as it slides.
+   */
+  engine(): { update(revs: number, throttle: number, slide: number, distance: number): void; stop(): void } | null {
+    const { ctx } = this;
+    if (!ctx || !this.master) return null;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = 0;
+    out.connect(this.master);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.value = 3;
+    lp.connect(out);
+    const voices = [1, 1.007, 0.5].map((k, i) => {
+      const o = ctx.createOscillator();
+      o.type = i === 2 ? 'square' : 'sawtooth';
+      const g = ctx.createGain();
+      g.gain.value = i === 2 ? 0.5 : 0.35;
+      o.connect(g).connect(lp);
+      o.start(t);
+      return { o, k };
+    });
+    const hiss = ctx.createBufferSource();
+    hiss.buffer = this.noise;
+    hiss.loop = true;
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = 1900;
+    band.Q.value = 4;
+    const screech = ctx.createGain();
+    screech.gain.value = 0;
+    hiss.connect(band).connect(screech).connect(this.master);
+    hiss.start(t);
+    return {
+      update: (revs, throttle, slide, distance) => {
+        const now = ctx.currentTime;
+        const f = 38 + revs * 170;
+        for (const { o, k } of voices) o.frequency.setTargetAtTime(f * k, now, 0.03);
+        lp.frequency.setTargetAtTime(350 + throttle * 2600 + revs * 600, now, 0.05);
+        const near = 1 / (1 + distance / 15);
+        out.gain.setTargetAtTime((0.05 + throttle * 0.08 + revs * 0.03) * near, now, 0.05);
+        screech.gain.setTargetAtTime(Math.min(0.12, Math.max(0, slide - 2.5) * 0.015) * near, now, 0.05);
+      },
+      stop: () => {
+        out.gain.setTargetAtTime(0, ctx.currentTime, 0.1);
+        screech.gain.setTargetAtTime(0, ctx.currentTime, 0.1);
+        for (const { o } of voices) o.stop(ctx.currentTime + 0.5);
+        hiss.stop(ctx.currentTime + 0.5);
+      },
+    };
+  }
+
+  /** A machine gun's shot heard from `distance` m: a short hard crack. */
+  gun(distance: number): void {
+    const near = 1 / (1 + distance / 20);
+    this.rumble(0.22 * near, 4200, 500, 0.07);
+    this.tone(0.06 * near, 900, 180, 0.04, 'square');
+  }
+
+  /** An exhaust's afterfire pop at a gear change, from `distance` m. */
+  pop(distance: number): void {
+    const near = 1 / (1 + distance / 12);
+    this.rumble(0.2 * near, 1600, 120, 0.14);
+    this.tone(0.07 * near, 260, 50, 0.09, 'square');
+    this.rumble(0.12 * near, 1300, 100, 0.1, 0.07);
+  }
+
   laser(on: boolean): void {
     const { ctx } = this;
     if (!ctx || !this.master) return;

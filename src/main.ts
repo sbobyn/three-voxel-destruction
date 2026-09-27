@@ -15,11 +15,19 @@ import { Impacts } from './impacts.ts';
 import { skyline } from './skyline.ts';
 import { Particles } from './particles.ts';
 import { CitySky } from './sky.ts';
+import { SpaceSky } from './space.ts';
+import { buildStation, HUB } from './station.ts';
 import { buzz, preventZoom, TouchControls, wantsTouch } from './touch.ts';
 import { Structure } from './structure.ts';
 import { ViewModel } from './viewmodel.ts';
-import { buildCity, emptyCity, isGlass, Mat, raycast, VOXEL, voxelAt } from './world.ts';
+import { buildCity, type City, emptyCity, isGlass, Mat, raycast, VOXEL, voxelAt } from './world.ts';
+import { buildTrack, gridSlot, KERB, RUNOFF, TRACK_WIDTH, trackField, type TrackLine } from './track.ts';
+import { CAR_MASS, CAR_SIZE, CLEARANCE, Car, type Drive, sweep } from './car.ts';
 import { chooseProfile, type DeviceProfile, deviceKey, forgetProfile, measureFrames, measurePhysics, type Quality, saveProfile, savedProfile } from './calibrate.ts';
+import { Flames } from './flames.ts';
+import { SuitJets } from './jets.ts';
+import { SkidMarks } from './skids.ts';
+import type { Satellites } from './satellites.ts';
 import { Loader } from './loader.ts';
 
 /** What a tool does where it hits: blast radius (m), share of it turned to dust, push (m/s), reach (m), seconds between uses, held fires again. */
@@ -52,9 +60,39 @@ interface Effects {
   dust(points: ArrayLike<number>, amount: number, tint: THREE.Color): void;
   impact(at: ArrayLike<number>, speed: number, tint: THREE.Color): void;
   sparks(at: ArrayLike<number>, count: number, speed: number): void;
+  exhaust(at: ArrayLike<number>, amount: number): void;
+  tyreSmoke(at: ArrayLike<number>, amount: number): void;
   update(dt: number, camera: THREE.Camera): void;
 }
-const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, update() {} };
+const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, tyreSmoke() {}, update() {} };
+
+/** Which world: the city block (the default), the race track (?scene=track) or the space station (?scene=space). */
+const SCENE: 'city' | 'track' | 'space' = (['track', 'space'] as const).find((s) => s === new URLSearchParams(location.search).get('scene')) ?? 'city';
+if (SCENE !== 'city') {
+  const name = SCENE === 'track' ? 'Voxel Circuit' : 'Voxel Orbit';
+  document.title = name;
+  const title = document.querySelector('#loader h1');
+  if (title) title.textContent = name;
+}
+/** The track's middle line (the track scene). */
+let line: TrackLine | null = null;
+/** The race car (the track), whether the player's in it, its body in the solver, the boost left (0..1). */
+let car: Car | null = null;
+let driving = false;
+let carSlot = -1;
+let boostLeft = 1;
+/** Its engine's sound (once the audio's started). */
+let engine: ReturnType<Sounds['engine']> = null;
+/** The chase camera: its yaw (following the car's heading), the mouse's look round and up (eased back when let go). */
+const chase = { yaw: 0, orbit: 0, lift: 0, idle: 0, kick: 0 };
+/** Build the scene's world (and, at the track, its line). */
+function buildWorld(): City {
+  if (SCENE === 'city') return buildCity();
+  if (SCENE === 'space') return buildStation();
+  const built = buildTrack();
+  line = built.line;
+  return built.city;
+}
 
 const canvas = document.querySelector('#view') as HTMLCanvasElement;
 /** Phones and tablets get thumb sticks and buttons (touch.ts) and start a notch lower in quality. */
@@ -89,6 +127,7 @@ const hud = new Hud(
   },
 );
 hud.showMenu(!testing);
+hud.onReset = () => void rebuild().then(() => hud.toast('Reset'));
 /** The thumb sticks and buttons, on touch devices (created with the input below). */
 let touch: TouchControls | null = null;
 hud.setLoading('Building the city…');
@@ -102,7 +141,7 @@ function applySettings(): void {
   view.camera.fov = settings.fov;
   view.camera.updateProjectionMatrix();
   sounds.setVolume(settings.volume);
-  view.sunRays.value = settings.sunRays ? 1 : 0;
+  view.sunRays.value = settings.sunRays && SCENE !== 'space' ? 1 : 0;
   // Auto: the device's own quality and resolution (before it is measured, the default)
   const auto = settings.graphics === 'auto';
   if (!auto) settings.quality = settings.graphics as Quality;
@@ -171,7 +210,7 @@ addEventListener('keydown', (e) => {
   // extensions take those before the page sees them)
   // Hold Tab: the tool wheel (the mouse aims it instead of turning the view)
   if (e.code === 'Tab' && !hud.wheelOpen) hud.openWheel();
-  if (e.code === 'KeyF') toggleFly();
+  if (e.code === 'KeyF') pressF();
   if (e.code === 'KeyR') void rebuild();
   if (e.code === 'KeyX') {
     timeScale = timeScale === 1 ? SLOW : 1;
@@ -209,6 +248,42 @@ addEventListener('mousemove', (e) => {
 });
 /** Mouse movement since the last frame (pixels), turned into a turn of the view once a frame. */
 const look = { x: 0, y: 0, sx: 0, sy: 0 };
+/** F: into the car or out of it (at the track, near it), else flying or walking. */
+function pressF(): void {
+  if (SCENE === 'space') {
+    hud.toast('No walking in orbit');
+    return;
+  }
+  if (car && (driving || player.position.distanceTo(car.position) < GET_IN)) setDriving(!driving);
+  else toggleFly();
+}
+/** How near the car (m) F gets in. */
+const GET_IN = 8;
+/** Near enough to get in, last frame (the prompt shows as the player comes up to it). */
+let byCar = false;
+/** Into the car (the chase view behind it) or out of it (standing by its door, on foot). */
+function setDriving(on: boolean): void {
+  if (!car) return;
+  driving = on;
+  hud.setDriving(on);
+  hand.object.visible = !on;
+  touch?.setFlying(on || player.flying);
+  if (on) {
+    chase.yaw = car.heading;
+    chase.orbit = chase.lift = 0;
+    return;
+  }
+  const f = car.forward;
+  player.position.set(car.position.x - f.y * 2.3, car.position.y + f.x * 2.3, 0);
+  player.velocity.set(0, 0, 0);
+  player.flying = false;
+  player.yaw = car.heading;
+  player.pitch = 0;
+  car.wantGuns = false;
+  rocketDue = false;
+  byCar = true;
+  hud.toast('On foot · F by the car to get back in');
+}
 function toggleFly(): void {
   player.flying = !player.flying;
   player.velocity.set(0, 0, 0);
@@ -216,6 +291,15 @@ function toggleFly(): void {
   touch?.setFlying(player.flying);
 }
 function turn(dt: number): void {
+  if (driving) {
+    const thumb = touch && playing ? touch.takeLook() : { x: 0, y: 0 };
+    const [mx, my] = [look.x * 0.0017 + thumb.x * TOUCH_LOOK, look.y * 0.0017 + thumb.y * TOUCH_LOOK];
+    look.x = look.y = 0;
+    chase.orbit -= mx * settings.sensitivity;
+    chase.lift = Math.max(-0.15, Math.min(0.9, chase.lift - my * settings.sensitivity * (settings.invertY ? -1 : 1)));
+    if (mx || my) chase.idle = 0;
+    return;
+  }
   if (touch && playing) {
     // Dragging to look: the view follows the thumb (radians per pixel), a little faster for
     // quick flicks so a turn doesn't take a whole swipe
@@ -376,7 +460,7 @@ touch = touchDevice
         if (down) wantFire = true;
       },
       aim: (on) => (aiming = on),
-      toggleFly: () => toggleFly(),
+      toggleFly: () => pressF(),
       pause: () => {
         touchPlaying = false;
         playing = captured || testing;
@@ -414,8 +498,25 @@ const concreteDust = new THREE.Color(0.62, 0.6, 0.56);
 
 /** Start on the pavement off the tower's rounded corner, looking up at it: the shopfront and the blade sign in view, the tower rising overhead. */
 function spawn(): void {
-  player.position.set(-27, -12, 0);
   player.velocity.set(0, 0, 0);
+  if (SCENE === 'space') {
+    // Floating off the station's corner, the truss and its wings across the view, the Earth below
+    player.zeroG = true;
+    player.flying = true;
+    player.position.set(HUB[0] - 34, HUB[1] - 30, HUB[2] + 3);
+    player.yaw = Math.atan2(HUB[1] - player.position.y, HUB[0] - player.position.x);
+    player.pitch = -0.2;
+    return;
+  }
+  if (SCENE === 'track' && line) {
+    // On the grid behind the start line, looking down the main straight at the wall across it
+    const { position, heading } = gridSlot(line);
+    player.position.set(position[0], position[1], 0);
+    player.yaw = heading;
+    player.pitch = 0.05;
+    return;
+  }
+  player.position.set(-27, -12, 0);
   player.yaw = 0.3;
   player.pitch = 0.38;
 }
@@ -423,7 +524,7 @@ function spawn(): void {
 /** The stages of starting up, as the loading bar shows them (weights: their share of the bar). */
 const loader = new Loader([
   { name: 'Starting the GPU and loading materials', weight: 4 },
-  { name: 'Building the building', weight: 2 },
+  { name: SCENE === 'track' ? 'Building the track' : SCENE === 'space' ? 'Building the station' : 'Building the building', weight: 2 },
   { name: 'Starting the physics', weight: 2 },
   { name: 'Lighting the sky', weight: 1 },
   { name: 'Compiling shaders', weight: 3 },
@@ -435,7 +536,7 @@ async function start(): Promise<void> {
   const device = await view.init((share) => loader.progress(share));
 
   await loader.stage(1);
-  city = buildCity();
+  city = buildWorld();
   structure = new Structure(city);
   (player as unknown as { city: typeof city }).city = city;
   chips.city = city;
@@ -448,14 +549,42 @@ async function start(): Promise<void> {
   physics.onCarry = (bodies, parent, offsets) => view.setLinks(bodies, parent, offsets);
   view.setPaints(city, physics.voxelOf);
   view.attachBalls(physics.spares);
-  view.setStreets(city);
-  view.scene.add(skyline(city));
+  if (SCENE === 'track' && line) {
+    // Open country: the air clearer than over the city, so the far side of the circuit shows
+    (view.scene.fog as THREE.FogExp2).density = 0.0011;
+    const extent = 240;
+    view.setTrack(trackField(line, 1024, extent), 1024, extent, TRACK_WIDTH, KERB, RUNOFF, line.points[2 * line.start], [-160, -82, -95, -60]);
+  } else if (SCENE === 'space') view.setSpace();
+  else {
+    view.setStreets(city);
+    view.scene.add(skyline(city));
+  }
   effects = startEffects();
+  if (SCENE === 'space') {
+    // Vacuum: chips and smoke fly on as thrown, nothing falls, nothing to land on, sound's muffled
+    chips.vacuum = shards.vacuum = true;
+    sounds.muffled = true;
+    suitJets = new SuitJets(VENTS.length);
+    view.scene.add(suitJets.object);
+    if (smoke) {
+      smoke.gravity.value = 0;
+      smoke.air.value = 0;
+      smoke.groundHeight = -1e5;
+    }
+  }
   spawn();
+  if (SCENE === 'track' && line) {
+    car = new Car();
+    flames = new Flames(car.exhausts().at.length);
+    skids = new SkidMarks(2);
+    view.scene.add(car.object, flames.object, skids.object);
+    placeCar();
+    setDriving(true);
+  }
 
   await loader.stage(3);
   await startSky();
-  view.camera.position.set(-27, -12, 1.7);
+  view.camera.position.set(player.position.x, player.position.y, 1.7);
 
   await loader.stage(4);
   // The scene's and the smoke's materials compile without blocking the page, then a frame
@@ -507,9 +636,12 @@ async function tune(device: GPUDevice, key: string): Promise<DeviceProfile> {
   loader.detail('Timing the drawing…');
   // A charge's smoke and a collapse's dust in front of the building, seen from the street
   spawn();
-  effects.explosion([0, -7.5, 5], 4.5);
+  // (In front of the spawn point, wherever the scene puts it)
+  const ahead = new THREE.Vector3(Math.cos(player.yaw), Math.sin(player.yaw), 0).multiplyScalar(18).add(player.position);
+  const off = SCENE === 'city' ? new THREE.Vector3(0, -7.5, 0) : ahead;
+  effects.explosion([off.x, off.y, 5], 4.5);
   const dust: number[] = [];
-  for (let k = 0; k < 400; k++) dust.push((Math.random() - 0.5) * 16, -7.5 - Math.random() * 4, Math.random() * 6);
+  for (let k = 0; k < 400; k++) dust.push(off.x + (Math.random() - 0.5) * 16, off.y - Math.random() * 4, Math.random() * 6);
   effects.dust(Float32Array.from(dust), 0.6, concreteDust);
   const step = () => tick(last + 1000 / 60);
   for (let k = 0; k < 40; k++) step();
@@ -541,10 +673,22 @@ function applyProfile(p: DeviceProfile): void {
   hud.setTuned(`This device: ${p.quality} quality${p.resolution < 1 ? ` at ${Math.round(p.resolution * 100)}% resolution` : ''}, up to ${p.looseCap.toLocaleString()} loose voxels`);
 }
 
+/**
+ * The scene as it started, without reloading the page (the shaders stay compiled): a new world
+ * and physics, nothing in flight or pending, the smoke and chips cleared, the player (and the
+ * car) back where they began.
+ */
 async function rebuild(): Promise<void> {
   alarms.clear();
+  for (const r of rockets.splice(0)) view.scene.remove(r.mesh);
+  pending.length = charges.length = blows.length = crushes.length = 0;
+  chips.clear();
+  shards.clear();
+  smoke?.clear();
+  skids?.clear();
+  dustiness = 0;
   physics.destroy();
-  city = buildCity();
+  city = buildWorld();
   structure = new Structure(city);
   (player as unknown as { city: typeof city }).city = city;
   chips.city = city;
@@ -558,6 +702,280 @@ async function rebuild(): Promise<void> {
   view.setPaints(city, physics.voxelOf);
   view.attachBalls(physics.spares);
   player.debrisCount = 0;
+  spawn();
+  if (car) {
+    placeCar();
+    setDriving(true);
+  }
+}
+
+/** The car back on the grid, at rest, with its body in the (new) solver. */
+function placeCar(): void {
+  if (!car || !line) return;
+  const { position, heading } = gridSlot(line);
+  car.place(position[0], position[1], heading);
+  carSlot = physics.vehicle(CAR_SIZE, [position[0], position[1], CLEARANCE + CAR_SIZE[2] / 2]);
+  boostLeft = 1;
+  chase.yaw = heading;
+}
+
+/** The car's controls: keys and the thumb stick (throttle up, steer across), or coasting to a stop with no one in it. */
+function driveInput(): Drive {
+  // No one in it: it brakes to a stop (full brakes, not a crawl on the handbrake)
+  if (!driving || !playing) {
+    const along = car ? car.speed : 0;
+    return { throttle: along > 0.3 ? -1 : along < -0.3 ? 1 : 0, steer: 0, handbrake: false, boost: false };
+  }
+  const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
+  const clamp = (v: number) => Math.max(-1, Math.min(1, v));
+  const stick = touch?.move ?? { forward: 0, right: 0 };
+  return {
+    throttle: clamp(k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown') + stick.forward),
+    steer: clamp(k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight') - stick.right),
+    handbrake: keys.has('Space') || touch?.up === true,
+    boost: (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch?.sprint === true) && boostLeft > 0,
+  };
+}
+
+/**
+ * One world step of the car: its handling in parts of no more than a third of a metre (a fast
+ * car can't pass through a half-metre wall between checks), each part checked against what
+ * still stands: broken through if the car carries enough momentum, else it stops there and
+ * bounces back. Then its body in the solver is set moving from where it was to where it is.
+ */
+function driveStep(dt: number): void {
+  const c = car!;
+  const d = driveInput();
+  boostLeft = Math.max(0, Math.min(1, boostLeft + (d.boost ? -dt * 0.22 : dt * 0.08)));
+  c.begin();
+  const [x0, y0, h0] = [c.position.x, c.position.y, c.heading];
+  const parts = Math.max(1, Math.ceil((c.velocity.length() * dt) / 0.33));
+  for (let k = 0; k < parts; k++) {
+    c.step(dt / parts, d);
+    const hits = sweep(city, c.position.x, c.position.y, c.heading);
+    if (hits.length && !crash(hits)) {
+      c.undo(0.2);
+      break;
+    }
+  }
+  if (carSlot >= 0) {
+    const turn = Math.atan2(Math.sin(c.heading - h0), Math.cos(c.heading - h0));
+    physics.drive(carSlot, [x0, y0, CLEARANCE + CAR_SIZE[2] / 2], [0, 0, Math.sin(h0 / 2), Math.cos(h0 / 2)], [(c.position.x - x0) / dt, (c.position.y - y0) / dt, 0], [0, 0, turn / dt]);
+  }
+}
+
+/**
+ * The car runs into `hits` (fixed voxels): it breaks through if it keeps enough speed after
+ * shoving their mass (its momentum shared with what it hits), blowing them out ahead of it
+ * across the width of its nose, and slows by that much; else it's stopped (false).
+ */
+function crash(hits: number[]): boolean {
+  const c = car!;
+  const v = c.velocity.length();
+  let mass = 0;
+  for (const h of hits) mass += isGlass(city.material[h]) ? 6 : city.material[h] === Mat.Leaf ? 2 : 28;
+  const kept = CAR_MASS / (CAR_MASS + 0.7 * mass);
+  if (v * kept < 3.5) {
+    if (v > 2) {
+      sounds.hammer(2);
+      shake = Math.max(shake, Math.min(0.8, v / 20));
+    }
+    return false;
+  }
+  const f = c.forward;
+  const nose = new THREE.Vector3(c.position.x + f.x * (CAR_SIZE[0] / 2 + 0.15), c.position.y + f.y * (CAR_SIZE[0] / 2 + 0.15), CLEARANCE + 0.55);
+  const at = (h: number) => Array.from(city.position.subarray(3 * h, 3 * h + 3));
+  const near = (a: number[], b: number[], r: number) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2 < r * r;
+  const hitsAt: Hit[] = [];
+  for (const o of [-0.7, 0, 0.7]) {
+    const p = [nose.x - f.y * o, nose.y + f.x * o, nose.z];
+    if (hits.some((h) => near(at(h), p, 1.3))) hitsAt.push({ at: p, radius: 0.95, push: v * 0.5, core: 0.12 });
+  }
+  // What it touched beyond those (a corner clipping a post) goes too
+  for (const h of hits.slice(0, 40)) if (!hitsAt.some((b) => near(at(h), b.at, 0.95))) hitsAt.push({ at: at(h), radius: 0.3, push: v * 0.4, core: 0 });
+  const result = blasts(city, structure, physics, hitsAt);
+  unsettled = true;
+  afterBlast(result, hitsAt);
+  chips.burst(result.gone, nose.toArray(), 2, v * 0.6 + 2);
+  chips.burst(result.loose, nose.toArray(), 0.6, v * 0.5 + 2);
+  const tint = dustTint[city.material[hits[0]]] ?? concreteDust;
+  effects.impact(nose.toArray(), Math.min(20, v), tint);
+  effects.sparks(nose.toArray(), 10, 4 + v * 0.2);
+  const broken = [...result.gone, ...result.loose];
+  const points = new Float32Array(broken.length * 3);
+  broken.forEach((u, k) => points.set(city.position.subarray(3 * u, 3 * u + 3), 3 * k));
+  if (broken.length) effects.dust(points, 0.25, tint);
+  if (result.falling.length > 50) sounds.collapse(result.falling.length, 6);
+  sounds.wreck(3, Math.min(40, v));
+  shake = Math.max(shake, Math.min(1.1, 0.25 + v / 45));
+  c.velocity.multiplyScalar(kept);
+  return true;
+}
+
+/**
+ * The car's weapons. Rocket launchers (left button): a rocket's blast, each launcher reloading
+ * for a while after its shot, so two quick ones then a wait. Machine guns (right button): a
+ * quick crack each, alternating barrels, knocking a fist-sized bite out of what they hit, their
+ * tracers flying fast.
+ */
+const BULLET: ToolSpec = { name: 'Machine gun', icon: '', hint: '', radius: 0.32, core: 0.55, push: 5, reach: 400, cooldown: 0.075, auto: true };
+const CAR_ROCKET: ToolSpec = { name: 'Rocket', icon: '', hint: '', radius: 1.8, core: 0.45, push: 13, explosive: true, reach: 600, cooldown: 0.3, auto: true };
+const BULLET_SPEED = 420;
+const CAR_ROCKET_SPEED = 85;
+/** Seconds a launcher takes to reload after its shot. */
+const RELOAD = 1.6;
+let gunCooldown = 0;
+let barrel = 0;
+/** When each launcher is loaded again (s, the world's clock), and which fires next. */
+const loaded = [0, 0];
+let launcher = 0;
+/** Seconds since each weapon last fired (they fold away after a while). */
+let gunsIdle = 0;
+let rocketsIdle = 0;
+/** A click's rocket, waiting for the launchers to swing up. */
+let rocketDue = false;
+/** The camera's eye and aim this frame (the weapons fire where it looks). */
+const aimFrom = new THREE.Vector3();
+const aimDir = new THREE.Vector3(1, 0, 0);
+/** Where the crosshair is on something (and where), for a shot from `from`. */
+function aimed(spec: ToolSpec): { to: THREE.Vector3; hit: boolean } {
+  const hit = raycast(city, aimFrom.toArray(), aimDir.toArray(), spec.reach);
+  const to = aimFrom.clone().addScaledVector(aimDir, hit ? hit.t : spec.reach * 0.7);
+  if (hit) to.addScaledVector(new THREE.Vector3(...hit.normal), -0.2);
+  // (The ground counts: a shot into the road goes off there)
+  return { to, hit: !!hit };
+}
+function fireGun(): void {
+  const muzzle = car!.muzzles().guns[barrel];
+  barrel = 1 - barrel;
+  const { to, hit } = aimed(BULLET);
+  rockets.push({ from: muzzle, to, t: 0, time: muzzle.distanceTo(to) / BULLET_SPEED, mesh: tracerMesh(), spec: hit ? BULLET : null, quiet: true });
+  sounds.gun(3);
+  shake = Math.max(shake, 0.08);
+  effects.sparks(muzzle.toArray(), 3, 5);
+  impacts.hit(muzzle.toArray(), aimDir.toArray(), 0.22, 0.05, hotRing, 0.12);
+}
+function fireRocket(): void {
+  const muzzle = car!.muzzles().rockets[launcher];
+  loaded[launcher] = simTime + RELOAD;
+  launcher = 1 - launcher;
+  const { to, hit } = aimed(CAR_ROCKET);
+  rockets.push({ from: muzzle, to, t: 0, time: muzzle.distanceTo(to) / CAR_ROCKET_SPEED, mesh: rocketMesh(0.8), spec: hit ? CAR_ROCKET : null });
+  sounds.zap();
+  shake = Math.max(shake, 0.22);
+  effects.impact(muzzle.toArray(), 4, smokeTint);
+}
+/** A machine gun's tracer: a short bright streak. */
+function tracerMesh(): THREE.Object3D {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 1.4), new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 3.2, 1.2) }));
+  view.scene.add(m);
+  return m;
+}
+/**
+ * In orbit, the suit's jets (jets.ts): plumes from the vents on its backpack against the push (so they fire as you
+ * set off, stop or turn, bigger the harder you push), and their rush of gas for as long as you steer. The vents are
+ * at the pack's corners, behind and beside the eye, so the gas streams into view from the suit, its vent out of
+ * sight (m: forward, out to the side, down). Only those facing the way the gas goes fire (none blow across you).
+ */
+const VENTS = [
+  [-0.1, 0.3, -0.3],
+  [-0.1, -0.3, -0.3],
+  [-0.1, 0.3, -0.6],
+  [-0.1, -0.3, -0.6],
+];
+let suitJets: SuitJets | null = null;
+function jets(dt: number, steering: boolean): void {
+  const push = player.thrust.length();
+  const amount = push < 0.5 ? 0 : Math.min(push / 15, 1);
+  // (Heard only while you steer: the suit braking itself to a stop after is silent)
+  if (steering && amount > 0) sounds.jet(amount);
+  const away = player.thrust.clone().divideScalar(-Math.max(push, 1e-6));
+  const eye = player.eye(new THREE.Vector3());
+  const [c, s] = [Math.cos(player.yaw), Math.sin(player.yaw)];
+  const ahead = Math.abs(away.x * c + away.y * s);
+  const vents = VENTS.map(([f, side, down]) => new THREE.Vector3(eye.x + c * f + s * side, eye.y + s * f - c * side, eye.z + down));
+  const amounts = VENTS.map(([, side, down]) => {
+    // The way the vent faces off the pack: out to its side, and up at the shoulders or down at the hips
+    const facing = new THREE.Vector3(s * side, -c * side, down > -0.45 ? 0.25 : -0.25).normalize();
+    return amount * Math.max(ahead, THREE.MathUtils.smoothstep(facing.dot(away), -0.2, 0.3));
+  });
+  suitJets?.update(dt, eye, player.velocity, vents, amounts, away);
+}
+
+/** The race car's afterfire (flames.ts) and the marks its tyres leave (skids.ts). */
+let flames: Flames | null = null;
+let skids: SkidMarks | null = null;
+
+/** The afterfire at a gear change, and the exhaust's wisps (from each pipe in turn, more under throttle). */
+let upshifts = 0;
+let smokeDue = 0;
+function exhaust(dt: number, throttle: number): void {
+  const c = car!;
+  const { at, back } = c.exhausts();
+  if (c.shifts !== upshifts) {
+    // The afterfire: a flame out of every pipe, a few sparks, a pop, a flare of the bloom and a kick of the camera
+    upshifts = c.shifts;
+    flames?.fire();
+    for (const p of at) effects.sparks(p.toArray(), 2, 3.5);
+    sounds.pop(driving ? 4 : eye.distanceTo(c.position));
+    view.glow = Math.max(0.6, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value);
+    chase.kick = 1;
+  }
+  flames?.update(dt, at, back);
+  // Under throttle only (clear at idle), a pipe at a time, thinning out at speed where it's left behind at once
+  smokeDue -= dt * throttle * (Math.abs(c.speed) < 45 ? 1 : 0.4);
+  if (smokeDue <= 0) {
+    smokeDue = 0.07;
+    effects.exhaust(at[Math.floor(Math.random() * at.length)].toArray(), throttle * 0.5);
+  }
+}
+
+/**
+ * The rear tyres sliding (drifting, or locked by the handbrake): black marks laid on the track, white smoke
+ * rolling out from under them, and their screech; the harder they slide, the more of each.
+ */
+let tyreSmokeDue = 0;
+function tyres(dt: number): void {
+  const c = car!;
+  const at = c.rearTyres();
+  skids?.update(at, c.skid, simTime);
+  if (c.skid < 0.05) return;
+  sounds.skid(c.skid);
+  tyreSmokeDue -= dt * (0.4 + c.skid);
+  if (tyreSmokeDue > 0) return;
+  tyreSmokeDue = 0.05;
+  for (const p of at) effects.tyreSmoke(p.toArray(), c.skid);
+}
+
+/** The chase camera behind the car: its eye and the way it looks (into `eye`, `dir`). */
+function chaseView(dt: number): void {
+  const c = car!;
+  const p = c.object.position;
+  const heading = c.object.rotation.z;
+  const turnBy = Math.atan2(Math.sin(heading - chase.yaw), Math.cos(heading - chase.yaw));
+  chase.yaw += turnBy * Math.min(1, dt * 4.5);
+  chase.idle += dt;
+  if (chase.idle > 1.2) {
+    chase.orbit *= Math.exp(-dt * 2.5);
+    chase.lift *= Math.exp(-dt * 2.5);
+  }
+  const speed = Math.abs(c.speed);
+  const yaw = chase.yaw + chase.orbit;
+  // A gear change nudges the view back a touch (the car surging after the lost beat of drive)
+  chase.kick *= Math.exp(-dt * 7);
+  const dist = 6.4 + Math.min(3, speed * 0.035) + chase.kick * 0.3;
+  const pitch = 0.19 + chase.lift;
+  eye.set(p.x - Math.cos(yaw) * dist * Math.cos(pitch), p.y - Math.sin(yaw) * dist * Math.cos(pitch), 1.1 + dist * Math.sin(pitch));
+  eye.z = Math.max(0.5, eye.z);
+  // Something standing between it and the car: in front of that instead
+  const from = new THREE.Vector3(p.x, p.y, 1.3);
+  const back = eye.clone().sub(from);
+  const reach = back.length();
+  back.divideScalar(reach);
+  const blocked = raycast(city, from.toArray(), back.toArray(), reach);
+  if (blocked && blocked.voxel >= 0) eye.copy(from).addScaledVector(back, Math.max(1.5, blocked.t - 0.4));
+  // Looking well ahead (the crosshair near the horizon, where the weapons reach), over the car
+  dir.set(p.x + Math.cos(yaw) * 40 - eye.x, p.y + Math.sin(yaw) * 40 - eye.y, 1.5 - eye.z).normalize();
 }
 
 /**
@@ -570,7 +988,7 @@ function startEffects(): Effects {
   view.smokeScene.add(particles.object);
   view.scene.add(particles.flash);
   smoke = particles;
-  const wind = new THREE.Vector3(1.6, 0.8, 0);
+  const wind = SCENE === 'space' ? new THREE.Vector3() : new THREE.Vector3(1.6, 0.8, 0);
   const sun = new THREE.Color();
   return {
     explosion: (at, radius) => {
@@ -580,6 +998,8 @@ function startEffects(): Effects {
     dust: (points, amount, tint) => particles.dust(points, amount, tint),
     impact: (at, speed, tint) => particles.impact(at, speed, tint),
     sparks: (at, count, speed) => particles.sparks(at, count, speed),
+    exhaust: (at, amount) => particles.exhaust(at, amount),
+    tyreSmoke: (at, amount) => particles.tyreSmoke(at, amount),
     update: (dt, camera) => {
       if (sky) {
         sun.copy(sky.sunColor).multiplyScalar(0.45 * sky.sunIntensity());
@@ -592,7 +1012,17 @@ function startEffects(): Effects {
 }
 
 // The sky: its sun lights the city, its horizon colours the fog, and its colours the reflections
-let sky: CitySky;
+/** What the frame needs of the sky: the city's (sky.ts) or orbit's (space.ts). */
+interface Sky {
+  readonly object: THREE.Object3D;
+  readonly sun: THREE.Vector3;
+  readonly horizon: THREE.Color;
+  readonly sunColor: THREE.Color;
+  sunIntensity(): number;
+  update(camera: THREE.Camera, time: number): void;
+  setQuality(quality: Settings['quality']): void;
+}
+let sky: Sky;
 /**
  * The smoke and dust, and the quality it's drawn at: the setting's, a step lower while a
  * thick cloud slows frames. The smoke has its own reduced-resolution pass and a budget of
@@ -660,6 +1090,18 @@ let sunStrength = 3;
 function setSun(hour: number): void {
   if (!sky || Math.abs(hour - sunHour) < 1e-3) return;
   sunHour = hour;
+  if (SCENE === 'space') {
+    // In orbit the "time" turns the sun round the station, 35 degrees up (the Earth below lit)
+    const azimuth = (hour / 24) * Math.PI * 2 + 2.2;
+    const elevation = 0.6;
+    view.sunDirection.set(Math.cos(elevation) * Math.cos(azimuth), Math.cos(elevation) * Math.sin(azimuth), Math.sin(elevation)).normalize();
+    sky.sun.copy(view.sunDirection);
+    sky.update(view.camera, performance.now() / 1000);
+    sunStrength = sky.sunIntensity();
+    view.renderer.toneMappingExposure = 1;
+    view.setSpace();
+    return;
+  }
   const day = (hour - 6.3) / 12.8;
   const azimuth = Math.PI * (0.15 - day * 1.1);
   const preset = SKIES.reduce((best, s) => (Math.abs(s.hour - hour) < Math.abs(best.hour - hour) ? s : best));
@@ -693,7 +1135,14 @@ async function startSky(): Promise<void> {
   skyIndex = await fetch('hdri/index.json')
     .then((r) => (r.ok ? (r.json() as Promise<Record<string, SkyInfo>>) : null))
     .catch(() => null);
-  sky = new CitySky(view.sunDirection);
+  if (SCENE === 'space') {
+    const space = new SpaceSky(new THREE.Vector3(...HUB));
+    satellites = space.satellites;
+    // Its clouds are drawn on a quad on the camera, once their noise volumes are made
+    view.camera.add(space.clouds.object);
+    await space.clouds.load(view.renderer);
+    sky = space;
+  } else sky = new CitySky(view.sunDirection);
   view.scene.add(sky.object);
   sky.update(view.camera, 0);
   setSun(settings.hour);
@@ -816,7 +1265,7 @@ const dir = new THREE.Vector3();
 let shake = 0;
 /** The block being destroyed (its middle, m) and how far out from it stays in focus (m). */
 const BLOCK_CENTRE = new THREE.Vector2(0, 0);
-const BLOCK_REACH = 22;
+const BLOCK_REACH = SCENE === 'track' ? 150 : SCENE === 'space' ? 120 : 22;
 /** Depth of field: the distance wanted in focus, the eased one, and the bokeh's size (eased). */
 let focusWant = 30;
 let focusAt = 30;
@@ -852,18 +1301,21 @@ function useTool(): void {
     return;
   }
   const hit = raycast(city, eye.toArray(), dir.toArray(), t.reach);
-  if (!hit) return;
-  const at = eye.clone().addScaledVector(dir, hit.t);
+  // (In orbit a rocket fired at nothing flies off into space, gone at the end of its reach: it may yet meet a satellite)
+  const intoSpace = !hit && t.name === 'Rocket' && city.weightless;
+  if (!hit && !intoSpace) return;
+  const at = eye.clone().addScaledVector(dir, hit ? hit.t : t.reach);
   // Centre the blast just inside what was hit
-  at.addScaledVector(new THREE.Vector3(...hit.normal), -Math.min(0.5, t.radius * 0.3));
+  if (hit) at.addScaledVector(new THREE.Vector3(...hit.normal), -Math.min(0.5, t.radius * 0.3));
   if (t.name === 'Rocket') {
     // A projectile: it flies there, then goes off
     const muzzle = eye.clone().add(new THREE.Vector3(0, 0, -0.15)).addScaledVector(dir, 0.8);
-    rockets.push({ from: muzzle, to: at, t: 0, time: muzzle.distanceTo(at) / ROCKET_SPEED, mesh: rocketMesh() });
+    rockets.push({ from: muzzle, to: at, t: 0, time: muzzle.distanceTo(at) / ROCKET_SPEED, mesh: rocketMesh(), spec: intoSpace ? null : undefined });
     sounds.zap();
     shake = Math.max(shake, 0.3);
     return;
   }
+  if (!hit) return;
   if (t.name === 'Charge') {
     // The detonator's button clicks in; the charge goes off a beat later
     sounds.click();
@@ -994,10 +1446,26 @@ function laserFrame(now: number): void {
   player.eye(eye);
   player.look(dir);
   const hit = raycast(city, eye.toArray(), dir.toArray(), t.reach);
-  const end = eye.clone().addScaledVector(dir, hit ? hit.t : t.reach);
-  impacts.beam(hand.muzzle(muzzleAt), end, !!hit, now);
+  // A satellite before whatever else the beam meets: it cuts through it, and it's wrecked
+  const sat = satellites?.hit(eye, dir, hit ? hit.t : t.reach);
+  const end = eye.clone().addScaledVector(dir, sat ? sat.distance : hit ? hit.t : t.reach);
+  if (sat) {
+    satellites!.smash(sat.craft, eye);
+    wreck(end);
+  }
+  impacts.beam(hand.muzzle(muzzleAt), end, !!hit || !!sat, now);
   sounds.laserBurn(hit && hit.voxel >= 0 ? 1 : 0);
   shake = Math.max(shake, 0.16);
+}
+
+/** In orbit, the satellites passing under the station (space.ts): rockets, the laser and blasts break them. */
+let satellites: Satellites | null = null;
+
+/** A satellite broken at `at` by a hit that didn't blow up (the laser): sparks, a flash and a bang. */
+function wreck(at: THREE.Vector3): void {
+  effects.sparks(at.toArray(), 30, 8);
+  effects.explosion(at.toArray(), 1.2);
+  sounds.blast(3, player.position.distanceTo(at));
 }
 
 /** Blasts due at a time (of the world's clock): where a thrown ball will smash through what it meets. */
@@ -1021,7 +1489,7 @@ function planBall(from: THREE.Vector3, v: THREE.Vector3, r: number): void {
   const now = simTime;
   const dt = 1 / 120;
   for (let t = 0; t < 4 && vel.length() > 10; t += dt) {
-    vel.z -= 9.81 * dt;
+    if (!city.weightless) vel.z -= 9.81 * dt;
     const step = vel.clone().multiplyScalar(dt);
     const hit = raycast(city, p.toArray(), step.clone().normalize().toArray(), step.length() + r);
     p.add(step);
@@ -1034,9 +1502,10 @@ function planBall(from: THREE.Vector3, v: THREE.Vector3, r: number): void {
 
 // Rockets in flight
 const ROCKET_SPEED = 70;
-const rockets: { from: THREE.Vector3; to: THREE.Vector3; t: number; time: number; mesh: THREE.Object3D }[] = [];
-function rocketMesh(): THREE.Object3D {
+const rockets: { from: THREE.Vector3; to: THREE.Vector3; t: number; time: number; mesh: THREE.Object3D; spec?: ToolSpec | null; quiet?: boolean }[] = [];
+function rocketMesh(scale = 1): THREE.Object3D {
   const g = new THREE.Group();
+  g.scale.setScalar(scale);
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.6, 10), new THREE.MeshStandardMaterial({ color: 0x5a5f55, roughness: 0.6 }));
   body.rotation.x = Math.PI / 2;
   const flame = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(4, 2.2, 0.8) }));
@@ -1052,12 +1521,18 @@ function flyRockets(dt: number): void {
     const r = rockets[k];
     r.t += dt;
     const f = Math.min(1, r.t / r.time);
+    const was = r.mesh.position.clone();
     r.mesh.position.lerpVectors(r.from, r.to, f);
     r.mesh.lookAt(r.from);
-    effects.impact(r.mesh.position.toArray(), 3, smokeTint);
-    if (f >= 1) {
+    if (!r.quiet) effects.impact(r.mesh.position.toArray(), 3, smokeTint);
+    // A satellite in its way (they move, so it's looked for as the rocket flies): it goes off there
+    const step = r.mesh.position.clone().sub(was);
+    const flown = step.length();
+    const sat = !r.quiet && flown > 0 ? satellites?.hit(was, step.divideScalar(flown), flown) : null;
+    if (sat) r.to.copy(was).addScaledVector(step, sat.distance);
+    if (f >= 1 || sat) {
       view.scene.remove(r.mesh);
-      detonate(r.to, TOOLS[2], player.position.distanceTo(r.to));
+      if (r.spec !== null || sat) detonate(r.to, r.spec ?? TOOLS[2], player.position.distanceTo(r.to));
       rockets.splice(k, 1);
     }
   }
@@ -1088,6 +1563,7 @@ const smokeTint = new THREE.Color(0.5, 0.5, 0.5);
 
 /** Tool `t`'s blast at `at`, `distance` m from the player: the damage, and its sound, flash, dust. */
 function detonate(at: THREE.Vector3, t: ToolSpec, distance: number, normal?: ArrayLike<number>): void {
+  satellites?.blast(at, t.radius);
   const result = blast(city, structure, physics, at.toArray(), t.radius, t.push, t.core);
   unsettled = true;
   afterBlast(result, [{ at: at.toArray() }]);
@@ -1141,6 +1617,8 @@ const CRUSH_DAMAGE = 2500;
 let looseCap = 8000;
 let damage = new Map<number, number>();
 const crushes: { voxel: number; speed: number }[] = [];
+/** In orbit, debris farther than this (m) from the station is let go of. */
+const DRIFT_OFF = 150;
 /** Debris slower than this (m/s) for this long (s) comes to rest. */
 const REST_SPEED = 0.25;
 const REST_SECONDS = 1.5;
@@ -1187,7 +1665,8 @@ async function readDebris(): Promise<void> {
       if (speed < 1 && stillFor[v] > 1) still.push(px, py, pz);
       // At rest a while: frozen where it lies (so a settled heap costs nothing)
       stillFor[v] = speed < REST_SPEED ? stillFor[v] + since : 0;
-      if (stillFor[v] > REST_SECONDS && resting.length < 4000) {
+      // (In orbit nothing comes to rest on anything: it drifts on, until it's far enough to let go of)
+      if (!city.weightless && stillFor[v] > REST_SECONDS && resting.length < 4000) {
         resting.push(v);
         poses.push(px, py, pz, data[o + 8], data[o + 9], data[o + 10], data[o + 11]);
       }
@@ -1206,7 +1685,7 @@ async function readDebris(): Promise<void> {
         }
       }
       // Debris coming down hard near the ground kicks up dust (a few puffs a readback, one per voxel a while)
-      if (speed > 6 && pz < 2.5 && puffs < 40 && now - lastImpact[v] > 3) {
+      if (!city.weightless && speed > 6 && pz < 2.5 && puffs < 40 && now - lastImpact[v] > 3) {
         lastImpact[v] = now;
         puffs++;
         effects.impact([px, py, Math.max(0.2, pz - 0.4)], speed, dustTint[city.material[v]] ?? concreteDust);
@@ -1225,7 +1704,7 @@ async function readDebris(): Promise<void> {
         .map((v, k) => ({ v, d: (data[12 * k] - x) ** 2 + (data[12 * k + 1] - y) ** 2, k }))
         .filter(({ k, v }) => data[12 * k + 2] > PARKED_BELOW && city.state[v] === 1)
         .sort((a, b) => b.d - a.d);
-      const settleNow = candidates
+      const settleNow = (city.weightless ? [] : candidates)
         .filter(({ k }) => data[12 * k + 2] < 2.5 && Math.hypot(data[12 * k + 4], data[12 * k + 5], data[12 * k + 6]) < 1.5)
         .slice(0, physics.loose - looseCap);
       if (settleNow.length) {
@@ -1243,6 +1722,15 @@ async function readDebris(): Promise<void> {
       chips.burst(gone.slice(0, 400), [x, y, 0], 1, 2);
       if (gone.length) physics.remove(gone);
       unsettled = true;
+    }
+    // In orbit, what's drifted far off goes (it's not coming back), loose voxels and whole pieces alike
+    if (city.weightless) {
+      const off = (d: Float32Array, o: number) => Math.hypot(d[o] - HUB[0], d[o + 1] - HUB[1], d[o + 2] - HUB[2]) > DRIFT_OFF;
+      const far = voxels.filter((v, k) => city.state[v] === 1 && off(data, 12 * k));
+      if (far.length) physics.remove(far);
+      sections.forEach((slot, k) => {
+        if (off(sectionData, 12 * k)) physics.discard(slot);
+      });
     }
     // Rubble at rest near the player is solid to them too
     for (const v of physics.rubble) {
@@ -1268,9 +1756,11 @@ async function readDebris(): Promise<void> {
       section.pose = pose;
       // It breaks only where breaking holds: hitting the ground or a floor still standing
       // (sections knocking each other in the air, stacked as they fall, stay whole), or at rest
-      const resting = age > 1 && speed < 0.5;
+      // (In orbit a piece never rests: it drifts, whole, until it hits something)
+      const resting = !city.weightless && age > 1 && speed < 0.5;
       let hit = false;
       if (age > 0.2 && jolt > SECTION_JOLT) {
+        if (city.weightless) hit = true;
         const low = physics.underside(slot, pose, 16);
         for (let i = 0; !hit && i < low.length; i += 3) hit = low[i + 2] < 1.2 || voxelAt(city, low[i], low[i + 1], low[i + 2] - 0.3) >= 0;
       }
@@ -1291,7 +1781,8 @@ async function readDebris(): Promise<void> {
         high = true;
         for (let i = 0; high && i < low.length; i += 3) if (low[i + 2] < 2 || voxelAt(city, low[i], low[i + 1], low[i + 2] - 0.3) >= 0) high = false;
       }
-      const share = hit ? Math.min(0.12, 0.03 + jolt / 100) : high ? 0.3 : 0.02;
+      // (In orbit it all flies apart: nothing to lay rubble down on)
+      const share = city.weightless ? 1 : hit ? Math.min(0.12, 0.03 + jolt / 100) : high ? 0.3 : 0.02;
       const low = physics.shatter(slot, pose, vel, share);
       unsettled = true;
       const at = new THREE.Vector3(pose[0], pose[1], pose[2]);
@@ -1332,7 +1823,7 @@ async function readDebris(): Promise<void> {
     // Rubble whose support went (a floor fell away under a heap) falls again
     if (unsettled) settleUntil = now + SETTLE_WATCH;
     unsettled = false;
-    if ((now < settleUntil && now - lastSettle > 0.3) || now - lastSettle > 3) {
+    if (!city.weightless && ((now < settleUntil && now - lastSettle > 0.3) || now - lastSettle > 3)) {
       lastSettle = now;
       physics.settle(still);
     }
@@ -1352,24 +1843,52 @@ function frame(now: number): void {
 }
 /** One frame of the game at time `now` (ms): input, physics, effects, the render. */
 function tick(now: number): void {
-  const dt = Math.min((now - last) / 1000, 0.1);
+  // (Never negative: a clock that jumps back, a frame from a timer and one from the display
+  // out of order, would stall the physics until it caught up)
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
   last = now;
   fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
   if (playing) {
     turn(dt);
-    const stride = Math.floor(player.walk / Math.PI);
-    player.update(dt, input());
-    // Footsteps at each half stride; a thud and a dip on landing
-    if (player.onGround && Math.floor(player.walk / Math.PI) !== stride) sounds.step(keys.has('ShiftLeft'));
-    if (player.landed > 4) {
-      sounds.land(player.landed);
-      dip = Math.min(0.25, player.landed * 0.02);
-    }
     cooldown -= dt;
-    const t = TOOLS[tool];
-    if ((wantFire || (held && t.auto)) && cooldown <= 0) {
-      useTool();
-      cooldown = t.cooldown;
+    if (driving && car) {
+      // Each weapon comes up while its button's held, fires once it's up, and folds away after a while
+      // (a click's rocket goes as soon as the launchers are up)
+      gunCooldown -= dt;
+      if (wantFire) rocketDue = true;
+      if (held || rocketDue) {
+        car.wantRockets = true;
+        rocketsIdle = 0;
+        if (car.rockets > 0.95 && cooldown <= 0 && simTime >= loaded[launcher]) {
+          fireRocket();
+          cooldown = CAR_ROCKET.cooldown;
+          rocketDue = false;
+        }
+      } else if ((rocketsIdle += dt) > 3) car.wantRockets = false;
+      if (aiming) {
+        car.wantGuns = true;
+        gunsIdle = 0;
+        if (car.guns > 0.95 && gunCooldown <= 0) {
+          fireGun();
+          gunCooldown = BULLET.cooldown;
+        }
+      } else if ((gunsIdle += dt) > 2.5) car.wantGuns = false;
+    } else {
+      const stride = Math.floor(player.walk / Math.PI);
+      const move = input();
+      player.update(dt, move);
+      if (player.zeroG) jets(dt, move.forward !== 0 || move.right !== 0 || move.rise !== 0);
+      // Footsteps at each half stride; a thud and a dip on landing
+      if (player.onGround && Math.floor(player.walk / Math.PI) !== stride) sounds.step(keys.has('ShiftLeft'));
+      if (player.landed > 4) {
+        sounds.land(player.landed);
+        dip = Math.min(0.25, player.landed * 0.02);
+      }
+      const t = TOOLS[tool];
+      if ((wantFire || (held && t.auto)) && cooldown <= 0) {
+        useTool();
+        cooldown = t.cooldown;
+      }
     }
     wantFire = false;
   }
@@ -1390,6 +1909,7 @@ function tick(now: number): void {
   let steps = 0;
   const t0 = performance.now();
   while (accumulator >= 1 / 60 && steps < 2) {
+    if (car) driveStep(1 / 60);
     physics.step();
     accumulator -= 1 / 60;
     steps++;
@@ -1398,9 +1918,18 @@ function tick(now: number): void {
   if (steps) stepMs += ((performance.now() - t0) / steps - stepMs) * 0.1;
   if (++frames % 6 === 0) void readDebris();
 
-  // Camera: the player's eye, shaken by blasts
-  player.eye(eye);
-  player.look(dir);
+  // Camera: the player's eye (or behind the car), shaken by blasts
+  if (car) {
+    car.draw(Math.min(1, accumulator * 60));
+    if (driving) player.position.set(car.position.x, car.position.y, 0);
+  }
+  if (driving && car) chaseView(dt);
+  else {
+    player.eye(eye);
+    player.look(dir);
+  }
+  aimFrom.copy(eye);
+  aimDir.copy(dir);
   const cam = view.camera;
   // Shake as trauma: it eases off, and the view moves by its square (a knock barely stirs it, a
   // blast next to you throws it about), wandering smoothly rather than jittering
@@ -1411,7 +1940,8 @@ function tick(now: number): void {
   dip *= Math.exp(-dt * 10);
   cam.position.copy(eye).add(new THREE.Vector3(wander(1) * trauma * 0.09, wander(2) * trauma * 0.09, wander(3) * trauma * 0.09 - dip));
   const sprinting = playing && keys.has('ShiftLeft') && Math.hypot(player.velocity.x, player.velocity.y) > 6;
-  const fov = aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
+  const carSpeed = driving && car ? Math.abs(car.speed) : 0;
+  const fov = driving ? settings.fov + Math.min(16, carSpeed * 0.18) + (keys.has('ShiftLeft') && boostLeft > 0 ? 5 : 0) + chase.kick * 1.5 : aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
   if (Math.abs(cam.fov - fov) > 0.05) {
     cam.fov += (fov - cam.fov) * Math.min(1, dt * 8);
     cam.updateProjectionMatrix();
@@ -1427,17 +1957,35 @@ function tick(now: number): void {
     focusWant = f ? Math.max(1.5, f.t) : 600;
   }
   focusAt += (focusWant - focusAt) * Math.min(1, dt * 5);
-  const dofOn = settings.dof && view.quality === 'high';
-  dofAmount += ((dofOn ? (aiming ? 12 : 8) : 0) - dofAmount) * Math.min(1, dt * 6);
+  // (Not in orbit: the stars and the Earth are as sharp as the station)
+  const dofOn = settings.dof && view.quality === 'high' && SCENE !== 'space';
+  // (In the car the right button fires the machine guns: no zoom)
+  const zoomed = aiming && !driving;
+  dofAmount += ((dofOn ? (zoomed ? 12 : 8) : 0) - dofAmount) * Math.min(1, dt * 6);
   // In focus: everything up to the far side of the block being destroyed (or what's aimed at,
   // if that's further); the city beyond softening gradually. Aiming down the sights focuses on
   // what's under the crosshair, the rest behind it going soft sooner.
-  const block = Math.hypot(eye.x - BLOCK_CENTRE.x, eye.y - BLOCK_CENTRE.y) + BLOCK_REACH;
-  view.setFocus(aiming ? focusAt + 2 : Math.max(block, Math.min(focusAt, 80)), aiming ? 25 : 90, dofAmount);
+  // (At the track: what's within reach of the player, wherever that is)
+  const block = (SCENE === 'city' ? Math.hypot(eye.x - BLOCK_CENTRE.x, eye.y - BLOCK_CENTRE.y) : 0) + BLOCK_REACH;
+  view.setFocus(zoomed ? focusAt + 2 : Math.max(block, Math.min(focusAt, 80)), zoomed ? 25 : 90, dofAmount);
   const pace = Math.hypot(player.velocity.x, player.velocity.y);
   hand.update(dt, player.walk, player.onGround ? Math.min(1, pace / 9) : 0, sprinting);
   view.glow = Math.max(0.35, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value - dt * 1.5);
-  const aim = raycast(city, eye.toArray(), dir.toArray(), TOOLS[tool].reach || 3);
+  const aim = raycast(city, eye.toArray(), dir.toArray(), driving ? CAR_ROCKET.reach : TOOLS[tool].reach || 3);
+  if (driving && car) hud.speed(car.speed * 3.6, boostLeft, car.gear, loaded.map((t) => Math.max(0, Math.min(1, 1 - (t - simTime) / RELOAD))));
+  if (car) {
+    exhaust(sim, driving && playing ? Math.max(0, driveInput().throttle) : 0);
+    tyres(sim);
+  }
+  // Walking up to the car: say how to get in
+  const near = !!car && !driving && player.position.distanceTo(car.position) < GET_IN;
+  if (near && !byCar) hud.toast(touch ? 'Tap the fly button to get in' : 'F to get in');
+  byCar = near;
+  if (car) {
+    engine ??= sounds.engine();
+    const throttle = driving && playing ? Math.max(0, driveInput().throttle) : 0;
+    engine?.update(car.revs, throttle, car.slip, driving ? 3 : eye.distanceTo(car.position));
+  }
   hud.aim(!!aim && aim.voxel >= 0);
   dustiness *= Math.exp(-sim / 25);
   view.dust = dustiness;
@@ -1469,6 +2017,14 @@ Object.assign(window, {
     hold: (on: boolean) => {
       held = on;
     },
+    /** Rockets, shells and tracers in flight. */
+    get flying() {
+      return rockets;
+    },
+    /** The right button (aim on foot, the machine guns in the car). */
+    aim: (on: boolean) => {
+      aiming = on;
+    },
     boom: (x: number, y: number, z: number, tool = 3) => detonate(new THREE.Vector3(x, y, z), TOOLS[tool], player.position.distanceTo(new THREE.Vector3(x, y, z))),
     /** Run one frame of `dt` seconds by hand (a hidden page gets no animation frames). */
     tick: (dt: number) => tick(last + dt * 1000),
@@ -1482,6 +2038,16 @@ Object.assign(window, {
     get physics() {
       return physics;
     },
+    /** The race car (the track), and getting in or out. */
+    get car() {
+      return car;
+    },
+    drive: (on: boolean) => setDriving(on),
+    get line() {
+      return line;
+    },
+    /** The chase camera's look round (orbit, lift: rad). */
+    chase,
     get world() {
       return city;
     },
@@ -1492,6 +2058,10 @@ Object.assign(window, {
     apply: applySettings,
     get smoke() {
       return smoke;
+    },
+    /** In orbit, the satellites under the station. */
+    get satellites() {
+      return satellites;
     },
     /** A fresh city (after a warm-up), and the sound (to record it: tap()). */
     rebuild,

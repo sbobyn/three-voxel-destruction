@@ -261,8 +261,9 @@ export function blasts(city: City, structure: Structure, physics: CityPhysics, h
     for (const found of structure.unsupported(i)) {
       const piece = { voxels: unglazed(found.voxels, -1), chunks: found.chunks };
       if (!piece.voxels.length) continue;
-      // Cut clean through (a tree's trunk): it tips over its lowest point, the cut's way
-      const moving = motion ?? (cut ? hinge(city, lowest(city, piece.voxels), cut) : undefined);
+      // Cut clean through (a tree's trunk): it tips over its lowest point, the cut's way. In
+      // orbit nothing tips: what's cut off drifts away from the cut, turning slowly
+      const moving = city.weightless ? drift(city, piece.voxels, first.at) : (motion ?? (cut ? hinge(city, lowest(city, piece.voxels), cut) : undefined));
       if (piece.voxels.length <= CLUMP) {
         structure.leave(piece.voxels);
         physics.loosen(piece.voxels, () => Bond.Rubble, moving);
@@ -275,7 +276,9 @@ export function blasts(city: City, structure: Structure, physics: CityPhysics, h
         // can be simulated one by one. What doesn't qualify falls as voxels, bonded.
         structure.leave(piece.voxels);
         const groups = new Map<number, number[]>();
-        for (const v of piece.voxels) {
+        // (In orbit it goes whole: nothing makes it break into storeys)
+        if (city.weightless) groups.set(0, piece.voxels);
+        else for (const v of piece.voxels) {
           const z = Math.floor(city.position[3 * v + 2] / VOXEL);
           const band = z < FLOORS.ground ? -1 : Math.floor((z - FLOORS.ground) / FLOORS.storey);
           const key = (band + 2) * 10000 + Math.floor(city.position[3 * v] / SECTION_SPAN) * 100 + Math.floor(city.position[3 * v + 1] / SECTION_SPAN) + 5000;
@@ -294,6 +297,27 @@ export function blasts(city: City, structure: Structure, physics: CityPhysics, h
   // Everything loose near each blast (freshly or already) is thrown
   for (const { at, radius, push } of hits) physics.blast(at, radius * 1.6, push);
   return result;
+}
+
+/**
+ * A piece cut off in orbit: drifting away from `from` (where it was cut or blown) at half a
+ * metre a second, turning slowly about its middle.
+ */
+function drift(city: City, voxels: number[], from: ArrayLike<number>): Motion {
+  const c = [0, 0, 0];
+  for (const v of voxels) for (let a = 0; a < 3; a++) c[a] += city.position[3 * v + a] / voxels.length;
+  const d = [c[0] - from[0], c[1] - from[1], c[2] - from[2]];
+  const l = Math.hypot(d[0], d[1], d[2]) || 1;
+  const speed = 0.5;
+  const v0 = d.map((x) => (x / l) * speed);
+  const spin = [(Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.12];
+  return {
+    spin,
+    at: (p) => {
+      const r = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+      return [v0[0] + spin[1] * r[2] - spin[2] * r[1], v0[1] + spin[2] * r[0] - spin[0] * r[2], v0[2] + spin[0] * r[1] - spin[1] * r[0]];
+    },
+  };
 }
 
 /** The lowest voxels of `voxels` (within a voxel of the lowest). */

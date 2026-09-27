@@ -34,6 +34,8 @@ export class Chips {
   private readonly look: ChipLook;
   private readonly colour = new Float32Array(MAX * 3);
   private next = 0;
+  /** In orbit: no gravity, no air, no ground (chips fly on, spinning, and fade). */
+  vacuum = false;
   private readonly matrix = new THREE.Matrix4();
   private readonly q = new THREE.Quaternion();
   private readonly e = new THREE.Euler();
@@ -108,6 +110,12 @@ export class Chips {
     }
   }
 
+  /** All gone (a fresh world). */
+  clear(): void {
+    this.age.fill(this.life);
+    this.update(0);
+  }
+
   update(dt: number): void {
     const { p, v, city } = this;
     let live = 0;
@@ -115,9 +123,9 @@ export class Chips {
       if (this.age[i] >= this.life) continue;
       this.age[i] += dt;
       const o = 3 * i;
-      // Plates catch the air: they slow and flutter down rather than drop
-      v[o + 2] -= GRAVITY * dt;
-      const air = Math.exp(-dt * (this.look.drag + this.size[i] * 3));
+      // Plates catch the air: they slow and flutter down rather than drop (none of that in orbit)
+      if (!this.vacuum) v[o + 2] -= GRAVITY * dt;
+      const air = this.vacuum ? 1 : Math.exp(-dt * (this.look.drag + this.size[i] * 3));
       v[o] *= air;
       v[o + 1] *= air;
       v[o + 2] = v[o + 2] < -4 ? v[o + 2] * air : v[o + 2];
@@ -127,7 +135,7 @@ export class Chips {
         // Bounce off the ground and off fixed voxels, losing most of the speed
         const q = [p[o], p[o + 1], p[o + 2]];
         q[a] = next;
-        const hitGround = a === 2 && next - half < 0;
+        const hitGround = !this.vacuum && a === 2 && next - half < 0;
         if (hitGround || voxelAt(city, q[0], q[1], q[2] - (a === 2 && v[o + 2] < 0 ? half : 0)) >= 0) {
           v[o + a] *= -0.3;
           for (let b = 0; b < 3; b++) if (b !== a) v[o + b] *= 0.7;

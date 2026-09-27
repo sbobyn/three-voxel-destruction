@@ -70,6 +70,14 @@ export class Structure {
   private readonly damaged = new Set<number>();
   private readonly city: City;
 
+  /** Whether voxel v holds its object in place: an anchor (the space station's), or on the ground. */
+  private holds(v: number): boolean {
+    const { city } = this;
+    if (city.anchor) return city.anchor[v] === 1;
+    const b = city.buildings[city.building[v]];
+    return city.cell[v] < b.w * b.d;
+  }
+
   constructor(city: City, seed = 11) {
     this.city = city;
     this.chunk = new Int32Array(city.count).fill(-1);
@@ -168,7 +176,7 @@ export class Structure {
         let ground = 0;
         for (const v of voxels) {
           this.chunk[v] = id;
-          if (city.cell[v] < b.w * b.d) ground++;
+          if (this.holds(v)) ground++;
         }
         this.chunks.push({ building: i, voxels, ground, edges: new Map() });
         this.byBuilding[i].push(id);
@@ -209,7 +217,7 @@ export class Structure {
       const layer = b.w * b.d;
       this.layers[ch.building][Math.floor(c / layer)]--;
       if (isGlass(city.material[v])) this.glass[ch.building][Math.floor(c / layer)]--;
-      if (c < layer) ch.ground--;
+      if (this.holds(v)) ch.ground--;
       this.neighbours(b, c, (u) => {
         if (city.state[u] !== State.Fixed || done.has(u)) return;
         const other = this.chunk[u];
@@ -246,9 +254,8 @@ export class Structure {
       parts.push(part);
     }
     parts.sort((x, y) => y.length - x.length);
-    const layer = b.w * b.d;
     ch.voxels = parts[0] ?? [];
-    ch.ground = ch.voxels.filter((v) => city.cell[v] < layer).length;
+    ch.ground = ch.voxels.filter((v) => this.holds(v)).length;
     for (const part of parts.slice(1)) {
       const nid = this.chunks.length;
       const nc: Chunk = { building: ch.building, voxels: part, ground: 0, edges: new Map() };
@@ -257,7 +264,7 @@ export class Structure {
       for (const v of part) this.chunk[v] = nid;
       for (const v of part) {
         const c = city.cell[v];
-        if (c < layer) nc.ground++;
+        if (this.holds(v)) nc.ground++;
         // Parts share no face, so every fixed neighbour outside the part is in another chunk
         this.neighbours(b, c, (u) => {
           if (city.state[u] !== State.Fixed || gone.has(u)) return;
@@ -312,6 +319,8 @@ export class Structure {
    * it (MARGIN), or none. A blown-out storey crushes, and everything above it comes down.
    */
   overloaded(i: number): number[] {
+    // In orbit nothing weighs anything
+    if (this.city.weightless) return [];
     const b = this.city.buildings[i];
     const count = this.layers[i];
     const glass = this.glass[i];
