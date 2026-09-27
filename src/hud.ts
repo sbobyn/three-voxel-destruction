@@ -138,14 +138,17 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 .menu .retune { background: none; border: 1px solid rgba(255,255,255,0.2); color: inherit; border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; }
 .menu .retune:hover { border-color: #ff8a3d; }
 .topbar { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 11; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; background: rgba(14,16,20,0.6); border: 1px solid rgba(255,255,255,0.12); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-size: 13px; font-weight: 600; user-select: none; }
-.topbar a, .topbar button { padding: 6px 12px; border-radius: 8px; border: 0; background: none; color: rgba(255,255,255,0.72); font: inherit; text-decoration: none; cursor: pointer; white-space: nowrap; transition: background 120ms, color 120ms; }
-.topbar a:hover, .topbar button:hover { color: #fff; background: rgba(255,255,255,0.08); }
-.topbar a.on { color: #1a0f06; background: #ff8a3d; }
+.topbar label { display: flex; align-items: center; gap: 6px; padding-left: 10px; color: rgba(255,255,255,0.55); }
+.topbar select { appearance: none; -webkit-appearance: none; padding: 6px 28px 6px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.14); color: #fff; font: inherit; cursor: pointer; background: rgba(255,255,255,0.06) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23ffffff' stroke-opacity='0.7' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center; transition: border-color 120ms; }
+.topbar select:hover, .topbar select:focus-visible { border-color: #ff8a3d; outline: none; }
+.topbar option { color: #fff; background: #16181e; }
+.topbar button { padding: 6px 12px; border-radius: 8px; border: 0; background: none; color: rgba(255,255,255,0.72); font: inherit; cursor: pointer; white-space: nowrap; transition: background 120ms, color 120ms; }
+.topbar button:hover { color: #fff; background: rgba(255,255,255,0.08); }
 .topbar .sep { width: 1px; height: 18px; margin: 0 4px; background: rgba(255,255,255,0.15); }
 .topbar kbd { margin-left: 6px; padding: 0 5px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.25); font: inherit; font-size: 11px; opacity: 0.7; }
 /* Touch: at the top left, level with the fly and pause buttons in the top right corner */
 body.touch .topbar { top: calc(env(safe-area-inset-top) + 12px); left: calc(env(safe-area-inset-left) + 12px); transform: none; font-size: 12px; }
-body.touch .topbar a, body.touch .topbar button { padding: 6px 9px; }
+body.touch .topbar button { padding: 6px 9px; }
 body.touch .topbar kbd { display: none; }
 .menu .grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 14px 0 18px; font-size: 12.5px; opacity: 0.8; }
 .menu .grid b { font-weight: 600; opacity: 0.9; }
@@ -422,11 +425,15 @@ export class Hud {
       onChange();
     });
     (this.menu.querySelector('.play') as HTMLButtonElement).addEventListener('click', onPlay);
-    // The bar across the top: the scenes, and the scene as it started. Above the menu too (with the pointer
-    // locked in play it can't be clicked: there it shows where you are, and R resets)
+    // The bar across the top: which scene (a choice of them), and the scene as it started. Above the menu too
+    // (with the pointer locked in play it can't be clicked: there it shows where you are, and R resets)
     const bar = document.createElement('nav');
     bar.className = 'topbar';
-    bar.innerHTML = `<a href="${link(null)}" class="${track || space ? '' : 'on'}">City</a><a href="${link('track')}" class="${track ? 'on' : ''}">Track</a><a href="${link('space')}" class="${space ? 'on' : ''}">Space</a><span class="sep"></span><button class="reset" title="The scene as it started">Reset<kbd>R</kbd></button>`;
+    const current = track ? 'track' : space ? 'space' : '';
+    const option = (value: string, name: string) => `<option value="${value}"${value === current ? ' selected' : ''}>${name}</option>`;
+    bar.innerHTML = `<label>Scene<select>${option('', 'City')}${option('track', 'Race track')}${option('space', 'Space station')}</select></label><span class="sep"></span><button class="reset" title="The scene as it started">Reset<kbd>R</kbd></button>`;
+    const choice = bar.querySelector('select') as HTMLSelectElement;
+    choice.addEventListener('change', () => location.assign(link(choice.value || null)));
     (bar.querySelector('.reset') as HTMLButtonElement).addEventListener('click', () => this.onReset());
     document.body.append(bar);
   }
