@@ -100,8 +100,8 @@ export class SpaceSky {
   private readonly stars: THREE.Mesh;
   /** The clouds over the Earth (on a quad on the camera: main.ts adds it there and loads them). */
   readonly clouds: OrbitClouds;
-  /** Satellites passing under the station. */
-  private readonly satellites: Satellites;
+  /** Satellites passing under the station (main.ts breaks them). */
+  readonly satellites: Satellites;
   /** The high, thin cirrus, a shell over the clouds. */
   private readonly cirrus: THREE.Mesh;
   /** The Earth, its air and its cirrus, swayed about the station's middle (`pivot`). */

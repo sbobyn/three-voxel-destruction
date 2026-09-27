@@ -746,11 +746,12 @@ export function buildingsNear(city: City, lo: ArrayLike<number>, hi: ArrayLike<n
 
 /**
  * First fixed voxel along a ray from `o` (m) along unit `d`, within `far` m (Amanatides–Woo
- * through each object's grid, in voxel units), or the ground (voxel -1); null for sky.
+ * through each object's grid, in voxel units), or the ground (voxel -1; in orbit there's none);
+ * null for sky.
  */
 export function raycast(city: City, o: ArrayLike<number>, d: ArrayLike<number>, far: number): { t: number; voxel: number; normal: [number, number, number] } | null {
   let best: { t: number; voxel: number; normal: [number, number, number] } | null = null;
-  if (d[2] < 0) {
+  if (d[2] < 0 && !city.weightless) {
     const t = -o[2] / d[2];
     if (t >= 0 && t <= far) best = { t, voxel: -1, normal: [0, 0, 1] };
   }

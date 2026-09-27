@@ -625,6 +625,21 @@ export class CityPhysics {
     this.park(voxels, State.Gone);
   }
 
+  /** Take a section out of play whole (drifted off for good): its voxels gone, its box parked for the next. */
+  discard(slot: number): void {
+    const section = this.sections.get(slot);
+    if (!section) return;
+    this.sections.delete(slot);
+    this.onCarry(
+      section.voxels.map((v) => this.body[v]),
+      -1,
+    );
+    this.solver.rewriteBodies([slot], [new Rigid(this.scratch, CUBE, 0, 0.7, parked(this.city.count + slot))]);
+    this.scratch.clear();
+    this.freeSlots.push(slot);
+    this.park(section.voxels, State.Gone);
+  }
+
   /** Push loose bodies within `radius` of `at` outward (m/s at the centre), up and spinning. */
   blast(at: ArrayLike<number>, radius: number, push: number, lift = this.city.weightless ? 0 : push * 0.4, spin = 6): void {
     this.wake(at, radius);

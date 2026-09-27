@@ -25,6 +25,7 @@ import { buildTrack, gridSlot, KERB, RUNOFF, TRACK_WIDTH, trackField, type Track
 import { CAR_MASS, CAR_SIZE, CLEARANCE, Car, type Drive, sweep } from './car.ts';
 import { chooseProfile, type DeviceProfile, deviceKey, forgetProfile, measureFrames, measurePhysics, type Quality, saveProfile, savedProfile } from './calibrate.ts';
 import { SuitJets } from './jets.ts';
+import type { Satellites } from './satellites.ts';
 import { Loader } from './loader.ts';
 
 /** What a tool does where it hits: blast radius (m), share of it turned to dust, push (m/s), reach (m), seconds between uses, held fires again. */
@@ -1106,6 +1107,7 @@ async function startSky(): Promise<void> {
     .catch(() => null);
   if (SCENE === 'space') {
     const space = new SpaceSky(new THREE.Vector3(...HUB));
+    satellites = space.satellites;
     // Its clouds are drawn on a quad on the camera, once their noise volumes are made
     view.camera.add(space.clouds.object);
     await space.clouds.load(view.renderer);
@@ -1269,18 +1271,21 @@ function useTool(): void {
     return;
   }
   const hit = raycast(city, eye.toArray(), dir.toArray(), t.reach);
-  if (!hit) return;
-  const at = eye.clone().addScaledVector(dir, hit.t);
+  // (In orbit a rocket fired at nothing flies off into space, gone at the end of its reach: it may yet meet a satellite)
+  const intoSpace = !hit && t.name === 'Rocket' && city.weightless;
+  if (!hit && !intoSpace) return;
+  const at = eye.clone().addScaledVector(dir, hit ? hit.t : t.reach);
   // Centre the blast just inside what was hit
-  at.addScaledVector(new THREE.Vector3(...hit.normal), -Math.min(0.5, t.radius * 0.3));
+  if (hit) at.addScaledVector(new THREE.Vector3(...hit.normal), -Math.min(0.5, t.radius * 0.3));
   if (t.name === 'Rocket') {
     // A projectile: it flies there, then goes off
     const muzzle = eye.clone().add(new THREE.Vector3(0, 0, -0.15)).addScaledVector(dir, 0.8);
-    rockets.push({ from: muzzle, to: at, t: 0, time: muzzle.distanceTo(at) / ROCKET_SPEED, mesh: rocketMesh() });
+    rockets.push({ from: muzzle, to: at, t: 0, time: muzzle.distanceTo(at) / ROCKET_SPEED, mesh: rocketMesh(), spec: intoSpace ? null : undefined });
     sounds.zap();
     shake = Math.max(shake, 0.3);
     return;
   }
+  if (!hit) return;
   if (t.name === 'Charge') {
     // The detonator's button clicks in; the charge goes off a beat later
     sounds.click();
@@ -1411,10 +1416,26 @@ function laserFrame(now: number): void {
   player.eye(eye);
   player.look(dir);
   const hit = raycast(city, eye.toArray(), dir.toArray(), t.reach);
-  const end = eye.clone().addScaledVector(dir, hit ? hit.t : t.reach);
-  impacts.beam(hand.muzzle(muzzleAt), end, !!hit, now);
+  // A satellite before whatever else the beam meets: it cuts through it, and it's wrecked
+  const sat = satellites?.hit(eye, dir, hit ? hit.t : t.reach);
+  const end = eye.clone().addScaledVector(dir, sat ? sat.distance : hit ? hit.t : t.reach);
+  if (sat) {
+    satellites!.smash(sat.craft, eye);
+    wreck(end);
+  }
+  impacts.beam(hand.muzzle(muzzleAt), end, !!hit || !!sat, now);
   sounds.laserBurn(hit && hit.voxel >= 0 ? 1 : 0);
   shake = Math.max(shake, 0.16);
+}
+
+/** In orbit, the satellites passing under the station (space.ts): rockets, the laser and blasts break them. */
+let satellites: Satellites | null = null;
+
+/** A satellite broken at `at` by a hit that didn't blow up (the laser): sparks, a flash and a bang. */
+function wreck(at: THREE.Vector3): void {
+  effects.sparks(at.toArray(), 30, 8);
+  effects.explosion(at.toArray(), 1.2);
+  sounds.blast(3, player.position.distanceTo(at));
 }
 
 /** Blasts due at a time (of the world's clock): where a thrown ball will smash through what it meets. */
@@ -1470,12 +1491,18 @@ function flyRockets(dt: number): void {
     const r = rockets[k];
     r.t += dt;
     const f = Math.min(1, r.t / r.time);
+    const was = r.mesh.position.clone();
     r.mesh.position.lerpVectors(r.from, r.to, f);
     r.mesh.lookAt(r.from);
     if (!r.quiet) effects.impact(r.mesh.position.toArray(), 3, smokeTint);
-    if (f >= 1) {
+    // A satellite in its way (they move, so it's looked for as the rocket flies): it goes off there
+    const step = r.mesh.position.clone().sub(was);
+    const flown = step.length();
+    const sat = !r.quiet && flown > 0 ? satellites?.hit(was, step.divideScalar(flown), flown) : null;
+    if (sat) r.to.copy(was).addScaledVector(step, sat.distance);
+    if (f >= 1 || sat) {
       view.scene.remove(r.mesh);
-      if (r.spec !== null) detonate(r.to, r.spec ?? TOOLS[2], player.position.distanceTo(r.to));
+      if (r.spec !== null || sat) detonate(r.to, r.spec ?? TOOLS[2], player.position.distanceTo(r.to));
       rockets.splice(k, 1);
     }
   }
@@ -1506,6 +1533,7 @@ const smokeTint = new THREE.Color(0.5, 0.5, 0.5);
 
 /** Tool `t`'s blast at `at`, `distance` m from the player: the damage, and its sound, flash, dust. */
 function detonate(at: THREE.Vector3, t: ToolSpec, distance: number, normal?: ArrayLike<number>): void {
+  satellites?.blast(at, t.radius);
   const result = blast(city, structure, physics, at.toArray(), t.radius, t.push, t.core);
   unsettled = true;
   afterBlast(result, [{ at: at.toArray() }]);
@@ -1665,10 +1693,14 @@ async function readDebris(): Promise<void> {
       if (gone.length) physics.remove(gone);
       unsettled = true;
     }
-    // In orbit, what's drifted far off goes (it's not coming back)
+    // In orbit, what's drifted far off goes (it's not coming back), loose voxels and whole pieces alike
     if (city.weightless) {
-      const far = voxels.filter((v, k) => city.state[v] === 1 && Math.hypot(data[12 * k] - HUB[0], data[12 * k + 1] - HUB[1], data[12 * k + 2] - HUB[2]) > DRIFT_OFF);
+      const off = (d: Float32Array, o: number) => Math.hypot(d[o] - HUB[0], d[o + 1] - HUB[1], d[o + 2] - HUB[2]) > DRIFT_OFF;
+      const far = voxels.filter((v, k) => city.state[v] === 1 && off(data, 12 * k));
       if (far.length) physics.remove(far);
+      sections.forEach((slot, k) => {
+        if (off(sectionData, 12 * k)) physics.discard(slot);
+      });
     }
     // Rubble at rest near the player is solid to them too
     for (const v of physics.rubble) {
@@ -1990,6 +2022,10 @@ Object.assign(window, {
     apply: applySettings,
     get smoke() {
       return smoke;
+    },
+    /** In orbit, the satellites under the station. */
+    get satellites() {
+      return satellites;
     },
     /** A fresh city (after a warm-up), and the sound (to record it: tap()). */
     rebuild,
