@@ -7,6 +7,8 @@
 
 import * as THREE from 'three/webgpu';
 import { OrbitClouds } from './orbit-clouds.ts';
+import { skyBodies } from './planets.ts';
+import { Satellites } from './satellites.ts';
 import { cameraPosition, clamp, dot, fwidth, modelPosition, mx_noise_float, positionLocal, float, floor, fract, length, max, mix, mx_cell_noise_float, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /** The Earth's radius (m, scaled), and how far under the station its top is. */
@@ -98,6 +100,8 @@ export class SpaceSky {
   private readonly stars: THREE.Mesh;
   /** The clouds over the Earth (on a quad on the camera: main.ts adds it there and loads them). */
   readonly clouds: OrbitClouds;
+  /** Satellites passing under the station. */
+  private readonly satellites: Satellites;
   /** The high, thin cirrus, a shell over the clouds. */
   private readonly cirrus: THREE.Mesh;
   /** The Earth, its air and its cirrus, swayed about the station's middle (`pivot`). */
@@ -149,7 +153,14 @@ export class SpaceSky {
     }
     const toSun = max(dot(dir, this.sunUniform), 0);
     const disc = smoothstep(0.99985, 0.9999, toSun).mul(14).add(pow(toSun, 1500).mul(1.5)).add(pow(toSun, 120).mul(0.04));
-    skyMat.colorNode = vec3(0.85, 0.9, 1).mul(stars).add(vec3(1, 0.97, 0.92).mul(disc)) as unknown as THREE.Node<'color'>;
+    // The Moon and the planets among the stars (planets.ts), hiding those behind them. (Lit by the sun as it is at
+    // the start: kept in the stars' frame, the Moon's phase would turn over with each lap of the orbit.)
+    const bodies = skyBodies(fixedDir, this.sunUniform);
+    skyMat.colorNode = vec3(0.85, 0.9, 1)
+      .mul(stars)
+      .mul(float(1).sub(bodies.cover))
+      .add(bodies.colour)
+      .add(vec3(1, 0.97, 0.92).mul(disc)) as unknown as THREE.Node<'color'>;
     this.stars = new THREE.Mesh(new THREE.SphereGeometry(5500, 48, 24), skyMat);
     this.stars.renderOrder = -2;
     this.stars.frustumCulled = false;
@@ -213,7 +224,8 @@ export class SpaceSky {
     this.cirrus = cirrusShell(this.sunUniform);
     this.cirrus.position.copy(earthCentre);
     this.earthCentre = earthCentre;
-    this.outside.add(earth, air, this.cirrus);
+    this.satellites = new Satellites(centre, EARTH_RADIUS + ALTITUDE);
+    this.outside.add(earth, air, this.cirrus, this.satellites.object);
     this.object.add(this.stars, this.outside);
     this.sunUniform.value.copy(this.sun);
   }
@@ -232,6 +244,7 @@ export class SpaceSky {
     // ORBIT seconds. (The sun is kept where it is, as in a dawn-to-dusk orbit: the station never goes into the dark.)
     if (this.started < 0) this.started = time;
     const t = time - this.started;
+    this.satellites.update(t);
     this.spin.setFromAxisAngle(ORBIT_AXIS, (t / ORBIT) * Math.PI * 2);
     this.earth.quaternion.copy(this.spin).multiply(this.earthRest);
     this.cirrus.quaternion.copy(this.spin);
