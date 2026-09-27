@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "three": "0.186.0",
-    "three-avbd": "^0.1.0"
+    "three-avbd": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",
