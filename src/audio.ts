@@ -142,7 +142,7 @@ export class Sounds {
     const t = ctx.currentTime;
     const { out, oscillators, hissLevel, scrubLevel } = this.screech;
     out.gain.cancelScheduledValues(t);
-    out.gain.setTargetAtTime(0.12 + 0.14 * amount, t, 0.05);
+    out.gain.setTargetAtTime(0.06 + 0.07 * amount, t, 0.05);
     out.gain.setTargetAtTime(0, t + 0.06, 0.1);
     for (const { o, ratio } of oscillators) o.frequency.setTargetAtTime((1400 + 400 * amount) * ratio, t, 0.08);
     hissLevel.gain.setTargetAtTime(0.15 + 0.3 * amount, t, 0.05);
