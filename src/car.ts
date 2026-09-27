@@ -191,14 +191,14 @@ function wheelCells(radius: number, width: number): Map<string, Finish> {
   return cells;
 }
 
-/** One cannon: a yellow arm, the gun on it, its barrel pointing forward (+x). */
+/** One cannon: a yellow arm, the gun on it, its barrel pointing forward (+x), a dark muzzle ring. */
 function cannonCells(): Map<string, Finish> {
   const cells = new Map<string, Finish>();
   const put = (x: number, y: number, z: number, f: Finish) => cells.set(`${x},${y},${z}`, f);
-  for (let z = 0; z < 4; z++) for (let x = 0; x < 2; x++) put(x, 0, z, YELLOW);
-  for (let x = -1; x < 4; x++) for (let y = -1; y < 2; y++) for (let z = 4; z < 6; z++) put(x, y, z, GUNMETAL);
-  for (let x = 4; x < 11; x++) put(x, 0, 5, GUNMETAL);
-  put(11, 0, 5, BLACK);
+  for (let z = 0; z < 5; z++) for (let x = 0; x < 2; x++) for (let y = 0; y < 2; y++) put(x, y, z, YELLOW);
+  for (let x = -2; x < 5; x++) for (let y = -1; y < 3; y++) for (let z = 5; z < 8; z++) put(x, y, z, x === -2 ? BLACK : GUNMETAL);
+  for (let x = 5; x < 13; x++) for (let y = 0; y < 2; y++) for (let z = 6; z < 8; z++) put(x, y, z, GUNMETAL);
+  for (let y = -1; y < 3; y++) for (let z = 5; z < 9; z++) if (y < 0 || y > 1 || z < 6 || z > 7) put(13, y, z, BLACK);
   return cells;
 }
 
@@ -353,15 +353,15 @@ export class Car {
     // Cannons: up out of the deck on their arms, then tilted level
     const up = THREE.MathUtils.smoothstep(this.deployed, 0, 1);
     for (const g of this.guns) {
-      // Stowed under the deck (5-6 cells up there), raised to stand on it
-      g.position.z = (-1 + 7 * up) * CELL;
+      // Stowed under the deck (5-6 cells up there), raised to stand on it on their arms
+      g.position.z = (-3 + 9 * up) * CELL;
       g.visible = this.deployed > 0.02;
     }
   }
 
   /** Where the cannons' muzzles are now (world, m). */
   muzzles(): THREE.Vector3[] {
-    return this.guns.map((g) => g.localToWorld(new THREE.Vector3(11.5 * CELL, 0.5 * CELL, 5.5 * CELL)));
+    return this.guns.map((g) => g.localToWorld(new THREE.Vector3(14 * CELL, 1 * CELL, 7 * CELL)));
   }
 
   /** The body's corners' rotation as a quaternion (xyzw), for the solver. */

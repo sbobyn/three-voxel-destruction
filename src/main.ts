@@ -1774,6 +1774,8 @@ Object.assign(window, {
     get line() {
       return line;
     },
+    /** The chase camera's look round (orbit, lift: rad). */
+    chase,
     get world() {
       return city;
     },
