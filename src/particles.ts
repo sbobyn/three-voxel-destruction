@@ -421,21 +421,22 @@ export class Particles {
       this.queue([Burst.DustRing, r, 5 * speed, life, d.r, d.g, d.b, 0.8, x, y, this.groundHeight, s], [x, y, this.groundHeight], Math.round(13 * f * Math.max(0.3, 1 - height / (r * 1.5))));
     }
     // Smoke the colour of the dust it's full of (a building's, not an oil fire's soot). In
-    // vacuum there's no air to hold it: a flash, and a thin cloud racing out and gone
+    // vacuum there's no air to hold it and nothing to burn: a flash, a thin cloud racing out and
+    // gone, and a few hot fragments cooling at once
     const vacuum = this.air.value === 0;
     const [held, thick] = vacuum ? [0.3, 0.3] : [1, 1];
     this.queue([Burst.Smoke, r, 3.5 * speed * (vacuum ? 2 : 1), life * held, 0.4, 0.38, 0.35, 0.85 * thick, x, y, z, s], [x, y, z], Math.round(14 * f * (vacuum ? 0.5 : 1)));
-    this.queue([Burst.Fireball, r, 7 * speed, life * (vacuum ? 0.25 : 1), 0.3, 0.29, 0.27, 0.9 * thick, x, y, z, s], [x, y, z], Math.round(16 * f));
-    this.queue([Burst.Sparks, r, 13 * speed, 1, 1, 1, 1, 0.9, x, y, z, 1], [x, y, z], Math.round(30 * f));
-    // A few burning chunks thrown out of anything bigger than a bang, arcing off (outward and up; in vacuum, any way)
-    const chunks = r < 0.8 ? 0 : Math.round(Math.min(TRAILERS, 2 + 2 * r) * this.quality.count);
+    this.queue([Burst.Fireball, r, 7 * speed, life * (vacuum ? 0.15 : 1), 0.3, 0.29, 0.27, 0.9 * thick, x, y, z, s], [x, y, z], Math.round(16 * f * (vacuum ? 0.5 : 1)));
+    this.queue([Burst.Sparks, r, 13 * speed, vacuum ? 0.3 : 1, 1, 1, 1, 0.9, x, y, z, 1], [x, y, z], Math.round(30 * f * (vacuum ? 0.35 : 1)));
+    // A few burning chunks thrown out of anything bigger than a bang, arcing off (none in vacuum: nothing burns)
+    const chunks = vacuum || r < 0.8 ? 0 : Math.round(Math.min(TRAILERS, 2 + 2 * r) * this.quality.count);
     for (let k = 0; k < chunks && this.trailers.length < TRAILERS * 3; k++) {
       const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
-      if (!vacuum) dir.z = Math.abs(dir.z) * 0.8 + 0.25;
+      dir.z = Math.abs(dir.z) * 0.8 + 0.25;
       const velocity = dir.normalize().multiplyScalar((6 + Math.random() * 8) * Math.sqrt(r));
       this.trailers.push({ at: new THREE.Vector3(x, y, z), velocity, age: 0, life: 0.9 + Math.random() * 0.9, size: 0.28 + 0.1 * r, carry: 0 });
     }
-    this.fires.push({ at: new THREE.Vector3(x, y, z), t0: this.clock, radius: r, until: this.clock + 1.2 * Math.sqrt(r) });
+    this.fires.push({ at: new THREE.Vector3(x, y, z), t0: this.clock, radius: r, until: this.clock + (vacuum ? 0.3 : 1.2) * Math.sqrt(r) });
   }
 
   /**
@@ -474,11 +475,12 @@ export class Particles {
     this.queue([Burst.Crumble, 1, 1.2, 1, t.r, t.g, t.b, 0.55, cx, cy, cz, this.quality.size * grow * thin.grow], origins, origins.length / 3);
   }
 
-  /** Sparks at `at`: `count` of them (times the quality's), flung out at up to `speed` m/s. */
+  /** Sparks at `at`: `count` of them (times the quality's), flung out at up to `speed` m/s (in vacuum fewer, cooling at once). */
   sparks(at: ArrayLike<number>, count: number, speed: number): void {
     const [x, y, z] = [at[0], at[1], at[2]];
-    const n = Math.max(1, Math.round(count * this.quality.count));
-    this.queue([Burst.Sparks, 0.2, speed, 1, 1, 1, 1, 0.9, x, y, z, 1], [x, y, z], n);
+    const vacuum = this.air.value === 0;
+    const n = Math.max(1, Math.round(count * this.quality.count * (vacuum ? 0.35 : 1)));
+    this.queue([Burst.Sparks, 0.2, speed, vacuum ? 0.3 : 1, 1, 1, 1, 0.9, x, y, z, 1], [x, y, z], n);
   }
 
   /** A puff of dust where a piece of debris hit the ground hard (speed m/s). */
