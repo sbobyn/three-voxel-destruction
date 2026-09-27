@@ -84,7 +84,7 @@ let boostLeft = 1;
 /** Its engine's sound (once the audio's started). */
 let engine: ReturnType<Sounds['engine']> = null;
 /** The chase camera: its yaw (following the car's heading), the mouse's look round and up (eased back when let go). */
-const chase = { yaw: 0, orbit: 0, lift: 0, idle: 0, kick: 0 };
+const chase = { yaw: 0, orbit: 0, lift: 0, idle: 0 };
 /** Build the scene's world (and, at the track, its line). */
 function buildWorld(): City {
   if (SCENE === 'city') return buildCity();
@@ -913,13 +913,13 @@ function exhaust(dt: number, throttle: number): void {
   const c = car!;
   const { at, back } = c.exhausts();
   if (c.shifts !== upshifts) {
-    // The afterfire: a flame out of every pipe, a few sparks, a pop, a flare of the bloom and a kick of the camera
+    // The afterfire: a flame out of every pipe, a few sparks, a pop and a flare of the bloom (the car and the
+    // camera carry on smoothly)
     upshifts = c.shifts;
     flames?.fire();
     for (const p of at) effects.sparks(p.toArray(), 2, 3.5);
     sounds.pop(driving ? 4 : eye.distanceTo(c.position));
     view.glow = Math.max(0.6, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value);
-    chase.kick = 1;
   }
   flames?.update(dt, at, back);
   // Under throttle only (clear at idle), a pipe at a time, thinning out at speed where it's left behind at once
@@ -962,8 +962,7 @@ function chaseView(dt: number): void {
   const speed = Math.abs(c.speed);
   const yaw = chase.yaw + chase.orbit;
   // A gear change nudges the view back a touch (the car surging after the lost beat of drive)
-  chase.kick *= Math.exp(-dt * 7);
-  const dist = 6.4 + Math.min(3, speed * 0.035) + chase.kick * 0.3;
+  const dist = 6.4 + Math.min(3, speed * 0.035);
   const pitch = 0.19 + chase.lift;
   eye.set(p.x - Math.cos(yaw) * dist * Math.cos(pitch), p.y - Math.sin(yaw) * dist * Math.cos(pitch), 1.1 + dist * Math.sin(pitch));
   eye.z = Math.max(0.5, eye.z);
@@ -1941,7 +1940,7 @@ function tick(now: number): void {
   cam.position.copy(eye).add(new THREE.Vector3(wander(1) * trauma * 0.09, wander(2) * trauma * 0.09, wander(3) * trauma * 0.09 - dip));
   const sprinting = playing && keys.has('ShiftLeft') && Math.hypot(player.velocity.x, player.velocity.y) > 6;
   const carSpeed = driving && car ? Math.abs(car.speed) : 0;
-  const fov = driving ? settings.fov + Math.min(16, carSpeed * 0.18) + (keys.has('ShiftLeft') && boostLeft > 0 ? 5 : 0) + chase.kick * 1.5 : aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
+  const fov = driving ? settings.fov + Math.min(16, carSpeed * 0.18) + (keys.has('ShiftLeft') && boostLeft > 0 ? 5 : 0) : aiming ? settings.fov * 0.45 : settings.fov + (sprinting ? 6 : 0);
   if (Math.abs(cam.fov - fov) > 0.05) {
     cam.fov += (fov - cam.fov) * Math.min(1, dt * 8);
     cam.updateProjectionMatrix();

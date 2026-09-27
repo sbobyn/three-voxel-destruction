@@ -9,7 +9,7 @@
 // what it drives into that still stands, it breaks or is stopped by (main.ts).
 
 import * as THREE from 'three/webgpu';
-import { attribute, float, select, uniform, vec3 } from 'three/tsl';
+import { attribute, float, mix, positionLocal, select, smoothstep, uniform, vec3 } from 'three/tsl';
 import { edgeShade } from './look.ts';
 import { type City, State, VOXEL } from './world.ts';
 
@@ -38,8 +38,14 @@ const WHEEL_R = 0.34;
 const FRONT_AXLE = 1.42;
 const REAR_AXLE = -1.3;
 const TRACK = 0.84;
-/** The exhausts' middles (m: across, up), two either side under the tail lights. */
-const PIPES = [-0.59375, -0.40625, 0.40625, 0.59375].map((y) => [y, 0.40625]);
+/**
+ * The exhausts: round titanium tips, two close together either side under the tail lights (their middles, m:
+ * across, up), their radius, how far each stands out of the tail and the tube's length (m).
+ */
+const PIPES = [-0.53, -0.4, 0.4, 0.53].map((y) => [y, 0.41]);
+const PIPE_R = 0.045;
+const PIPE_OUT = 0.07;
+const PIPE_LEN = 0.14;
 const WHEEL_W = 0.3;
 
 /** A cell's look; a lamp's glow switched by the brakes or reversing (else always on). */
@@ -52,7 +58,6 @@ const HEAD: Finish = { colour: 0xe6f0ff, rough: 0.3, metal: 0, glow: 0.9 };
 const TAIL: Finish = { colour: 0xc40806, rough: 0.3, metal: 0, glow: 1, lamp: 'brake' };
 // (A grey lens: white paint would read as a light in the sun even when it's off)
 const REVERSE: Finish = { colour: 0x8c929c, rough: 0.2, metal: 0, glow: 1, lamp: 'reverse' };
-const PIPE: Finish = { colour: 0x6b6f75, rough: 0.3, metal: 0.9, glow: 0 };
 const YELLOW: Finish = { colour: 0xe8b810, rough: 0.4, metal: 0.3, glow: 0 };
 const GUNMETAL: Finish = { colour: 0x2a2e33, rough: 0.35, metal: 0.8, glow: 0 };
 const TIP: Finish = { colour: 0xb3261e, rough: 0.4, metal: 0.3, glow: 0 };
@@ -166,10 +171,10 @@ function shape(x: number, y: number, z: number): Finish | null {
   if (ay > hw - 0.05 && z > 0.36 && z < 0.44 && x > -0.3 && x < 1.1) return SHADOW; // a crease along the door
   // The tail: the diffuser under it, a dark band with a row of short light bars (two cells tall)
   // across each side and a white reversing light standing at its outer end; between them a black
-  // valance the four exhausts stand out of (bodyCells adds those)
+  // valance the four exhausts stand out of (Car adds those: round, not cells)
   if (x < -2.2) {
     if (z < 0.34) return ay < 0.75 && Math.floor(ay / 0.19) % 2 === 1 && z < 0.3 ? SHADOW : BLACK;
-    if (z < 0.5 && ay > 0.3 && ay < 0.72) return BLACK;
+    if (z < 0.5 && ay > 0.31 && ay < 0.62) return BLACK;
     const band = z > 0.5 && z < 0.7 && ay > 0.28 && ay < 0.9;
     if (band) {
       if (ay > 0.82) return REVERSE;
@@ -180,6 +185,30 @@ function shape(x: number, y: number, z: number): Finish | null {
   }
   if (x < -2.24 && z > top - 0.04) return BLACK; // the ducktail's lip
   return PAINT;
+}
+
+/**
+ * The exhaust tips: thin-walled titanium tubes standing out of the tail, their ends blued and golden from the
+ * heat, a dark bore set just inside each.
+ */
+function exhaustTips(): THREE.Group {
+  const tips = new THREE.Group();
+  // The tube along x, its end (the tip) at x = -PIPE_LEN / 2
+  const tube = new THREE.CylinderGeometry(PIPE_R, PIPE_R, PIPE_LEN, 24, 1, true).rotateZ(Math.PI / 2);
+  const metal = new THREE.MeshStandardNodeMaterial({ metalness: 0.9, roughness: 0.28 });
+  const toTip = smoothstep(PIPE_LEN * 0.1, -PIPE_LEN / 2, positionLocal.x);
+  const heat = mix(vec3(0.72, 0.58, 0.32), vec3(0.3, 0.36, 0.72), smoothstep(0.55, 1, toTip));
+  metal.colorNode = mix(vec3(0.62, 0.63, 0.66), heat, toTip.mul(0.8)) as unknown as THREE.Node<'color'>;
+  const bore = new THREE.CircleGeometry(PIPE_R * 0.92, 24).rotateY(-Math.PI / 2);
+  const dark = new THREE.MeshBasicMaterial({ color: 0x050505 });
+  for (const [y, z] of PIPES) {
+    const pipe = new THREE.Mesh(tube, metal);
+    pipe.position.set(-HALF_L - PIPE_OUT + PIPE_LEN / 2, y, z);
+    const inside = new THREE.Mesh(bore, dark);
+    inside.position.set(-HALF_L - PIPE_OUT + 0.012, y, z);
+    tips.add(pipe, inside);
+  }
+  return tips;
 }
 
 /** Cells of the body, from the shape sampled at each cell's middle. */
@@ -194,11 +223,6 @@ function bodyCells(): Map<string, Finish> {
         const f = shape(-HALF_L + (i + 0.5) * CELL, -HALF_W + (j + 0.5) * CELL, (k + 0.5) * CELL);
         if (f) cells.set(`${i},${j},${k}`, f);
       }
-  // Four exhausts, two a side, standing out of the tail: a steel ring round a black bore, three cells across
-  for (const [j, k] of PIPES.map(([y, z]) => [Math.round((y + HALF_W) / CELL - 0.5), Math.round(z / CELL - 0.5)]))
-    for (let dj = -1; dj <= 1; dj++)
-      for (let dk = -1; dk <= 1; dk++)
-        for (const i of [-2, -1]) cells.set(`${i},${j + dj},${k + dk}`, i === -2 && dj === 0 && dk === 0 ? BLACK : PIPE);
   // Mirrors on stalks by the windscreen, just outside the body
   const i0 = Math.round((0.72 + HALF_L) / CELL);
   const k0 = Math.round(0.74 / CELL);
@@ -324,7 +348,7 @@ const ARM = 8;
 
 /** Top gear speeds (km/h) of each of the seven gears (the first from rest). */
 /** The tyres' grip across (m/s²): how hard it can corner before it runs wide. */
-const GRIP = 11;
+const GRIP = 14;
 /**
  * The tail and reversing lights' glow: off (the tail lights' dim running glow) and on. (Brighter tail lights than
  * this only turn orange through the tone mapping: they look brighter against a dimmer running glow instead.)
@@ -337,8 +361,6 @@ interface Lights {
 }
 
 const GEARS = [0, 55, 90, 125, 160, 195, 230, 300];
-/** Seconds of lost drive at an upshift. */
-const SHIFT = 0.16;
 
 /** The race car: its model, its handling, and where it is. */
 export class Car {
@@ -359,7 +381,6 @@ export class Car {
   gear = 1;
   revs = 0;
   shifts = 0;
-  private shifting = 0;
   /** 0 (stowed) to 1 (up and firing): the machine guns and the rocket launchers, and whether each is wanted. */
   guns = 0;
   rockets = 0;
@@ -386,6 +407,7 @@ export class Car {
     const brake = this.lights;
     this.body = voxelMesh(bodyCells(), [HALF_L / CELL, HALF_W / CELL, 0], brake);
     this.object.add(this.body);
+    this.body.add(exhaustTips());
     const wheel = wheelCells();
     const half = WHEEL_W / CELL / 2;
     for (const [x, s] of [
@@ -459,17 +481,12 @@ export class Car {
     const side = new THREE.Vector2(-f.y, f.x);
     let along = this.velocity.dot(f);
     const across = this.velocity.dot(side);
-    // Gears: up at the top of each (a beat of lost drive, an afterfire), down as it slows
+    // Gears: up at the top of each (an afterfire, the drive unbroken), down as it slows
     const kmh = Math.abs(along) * 3.6;
     if (this.gear < GEARS.length - 1 && kmh > GEARS[this.gear]) {
       this.gear++;
-      if (d.throttle > 0.3) {
-        this.shifting = SHIFT;
-        this.shifts++;
-        this.pitch += 0.025;
-      }
+      if (d.throttle > 0.3) this.shifts++;
     } else if (this.gear > 1 && kmh < GEARS[this.gear - 1] * 0.92) this.gear--;
-    this.shifting = Math.max(0, this.shifting - dt);
     const low = GEARS[this.gear - 1];
     const within = Math.min(1, (kmh - low) / (GEARS[this.gear] - low));
     this.revs = 0.25 + 0.75 * (this.gear === 1 ? within : 0.35 + within * 0.65);
@@ -479,8 +496,7 @@ export class Car {
     this.braking = (d.throttle < 0 && along > 0.5) || (d.handbrake && Math.abs(along) > 0.5);
     this.reversing = d.throttle < 0 && along <= 0.5;
     if (d.throttle > 0) {
-      const cut = this.shifting > 0 ? 0.25 : 1;
-      const push = along < 0 ? 30 : 12 * Math.max(0, 1 - (along / top) ** 2) * (d.boost ? 1.4 : 1) * cut;
+      const push = along < 0 ? 30 : 12 * Math.max(0, 1 - (along / top) ** 2) * (d.boost ? 1.4 : 1);
       along += push * d.throttle * dt;
     } else if (d.throttle < 0) {
       if (along > 0.5) along = Math.max(0, along + 26 * d.throttle * dt);
@@ -491,9 +507,9 @@ export class Car {
     if (d.handbrake) along -= Math.sign(along) * Math.min(Math.abs(along), 7 * dt);
     // Steering: the lock falls away with speed; the wheel winds on steadily and comes back to the middle
     // quicker (a weighted rack, not a switch)
-    const most = 0.55 / (1 + Math.abs(along) / 14);
+    const most = 0.6 / (1 + Math.abs(along) / 17);
     const want = d.steer * most;
-    const rate = (Math.abs(want) < Math.abs(this.steer) || want * this.steer < 0 ? 3.2 : 1.9) * dt;
+    const rate = (Math.abs(want) < Math.abs(this.steer) || want * this.steer < 0 ? 3.6 : 2.7) * dt;
     this.steer += Math.max(-rate, Math.min(rate, want - this.steer));
     // Yaw from the steering (a bicycle, 2.7 m between the axles), up to what the tyres can hold (about 1.1 g
     // across: turn harder at speed and it runs wide, not round); the car's weight takes a moment to turn, and
@@ -501,7 +517,7 @@ export class Car {
     const wheelbase = FRONT_AXLE - REAR_AXLE;
     const grip = GRIP / Math.max(Math.abs(along), 1);
     const target = Math.max(-grip, Math.min(grip, (along / wheelbase) * Math.tan(this.steer))) * (d.handbrake ? 1.45 : 1);
-    this.yawRate += (target - this.yawRate) * Math.min(1, dt * (d.handbrake ? 3 : 5.5));
+    this.yawRate += (target - this.yawRate) * Math.min(1, dt * (d.handbrake ? 3 : 7.5));
     this.heading += this.yawRate * dt;
     // The velocity keeps its way as the car turns under it: what's now sideways to the new
     // heading is sliding, and the grip takes that away (fast; slowly under the handbrake: a drift)
@@ -518,7 +534,7 @@ export class Car {
     this.roll += (along / WHEEL_R) * dt;
     // Body lean and pitch, for the look of it: squat under power, dive under brakes, a nod at each shift
     this.lean += (Math.max(-0.06, Math.min(0.06, -this.yawRate * along * 0.004)) - this.lean) * Math.min(1, dt * 6);
-    const squat = this.braking ? 0.035 : d.throttle > 0 && this.shifting === 0 ? -0.015 : 0;
+    const squat = this.braking ? 0.035 : d.throttle > 0 ? -0.015 : 0;
     this.pitch += (squat - this.pitch) * Math.min(1, dt * 5);
     // The weapons come up while wanted
     this.guns = Math.max(0, Math.min(1, this.guns + (this.wantGuns ? dt * 5 : -dt * 2)));
@@ -579,7 +595,7 @@ export class Car {
   /** Where the exhausts are (world, m), and the way out of them (backwards). */
   exhausts(): { at: THREE.Vector3[]; back: THREE.Vector3 } {
     this.object.updateMatrixWorld(true);
-    const at = PIPES.map(([y, z]) => this.body.localToWorld(new THREE.Vector3(-HALF_L - 2 * CELL, y, z)));
+    const at = PIPES.map(([y, z]) => this.body.localToWorld(new THREE.Vector3(-HALF_L - PIPE_OUT, y, z)));
     const f = this.forward;
     return { at, back: new THREE.Vector3(-f.x, -f.y, 0.15).normalize() };
   }
