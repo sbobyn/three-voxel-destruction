@@ -60,6 +60,11 @@ const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {
 
 /** Which world: the city block (the default) or the race track (?scene=track). */
 const SCENE: 'city' | 'track' = new URLSearchParams(location.search).get('scene') === 'track' ? 'track' : 'city';
+if (SCENE === 'track') {
+  document.title = 'Voxel Circuit';
+  const title = document.querySelector('#loader h1');
+  if (title) title.textContent = 'Voxel Circuit';
+}
 /** The track's middle line (the track scene). */
 let line: TrackLine | null = null;
 /** The race car (the track), whether the player's in it, its body in the solver, the boost left (0..1). */
@@ -67,6 +72,8 @@ let car: Car | null = null;
 let driving = false;
 let carSlot = -1;
 let boostLeft = 1;
+/** Its engine's sound (once the audio's started). */
+let engine: ReturnType<Sounds['engine']> = null;
 /** The chase camera: its yaw (following the car's heading), the mouse's look round and up (eased back when let go). */
 const chase = { yaw: 0, orbit: 0, lift: 0, idle: 0 };
 /** Build the scene's world (and, at the track, its line). */
@@ -780,6 +787,13 @@ function chaseView(dt: number): void {
   const pitch = 0.19 + chase.lift;
   eye.set(p.x - Math.cos(yaw) * dist * Math.cos(pitch), p.y - Math.sin(yaw) * dist * Math.cos(pitch), 1.1 + dist * Math.sin(pitch));
   eye.z = Math.max(0.5, eye.z);
+  // Something standing between it and the car: in front of that instead
+  const from = new THREE.Vector3(p.x, p.y, 1.3);
+  const back = eye.clone().sub(from);
+  const reach = back.length();
+  back.divideScalar(reach);
+  const blocked = raycast(city, from.toArray(), back.toArray(), reach);
+  if (blocked && blocked.voxel >= 0) eye.copy(from).addScaledVector(back, Math.max(1.5, blocked.t - 0.4));
   dir.set(p.x + Math.cos(yaw) * 16 - eye.x, p.y + Math.sin(yaw) * 16 - eye.y, 1.2 - eye.z).normalize();
 }
 
@@ -1576,7 +1590,9 @@ function frame(now: number): void {
 }
 /** One frame of the game at time `now` (ms): input, physics, effects, the render. */
 function tick(now: number): void {
-  const dt = Math.min((now - last) / 1000, 0.1);
+  // (Never negative: a clock that jumps back, a frame from a timer and one from the display
+  // out of order, would stall the physics until it caught up)
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
   last = now;
   fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
   if (playing) {
@@ -1687,6 +1703,11 @@ function tick(now: number): void {
   view.glow = Math.max(0.35, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value - dt * 1.5);
   const aim = raycast(city, eye.toArray(), dir.toArray(), driving ? CANNON.reach : TOOLS[tool].reach || 3);
   if (driving && car) hud.speed(car.speed * 3.6, boostLeft);
+  if (car) {
+    engine ??= sounds.engine();
+    const throttle = driving && playing ? Math.max(0, driveInput().throttle) : 0;
+    engine?.update(car.speed * 3.6, throttle, car.slip, driving ? 3 : eye.distanceTo(car.position));
+  }
   hud.aim(!!aim && aim.voxel >= 0);
   dustiness *= Math.exp(-sim / 25);
   view.dust = dustiness;
@@ -1736,6 +1757,9 @@ Object.assign(window, {
       return car;
     },
     drive: (on: boolean) => setDriving(on),
+    get line() {
+      return line;
+    },
     get world() {
       return city;
     },

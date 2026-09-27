@@ -194,6 +194,69 @@ export class Sounds {
   }
 
   /** The laser: a hum while it fires (start with true, stop with false), crackling where it burns. */
+  /**
+   * The race car's engine, running while it's there: `update` it each frame with the speed
+   * (km/h), the throttle (0..1), how fast it's sliding sideways (m/s) and how far off the
+   * listener is (m). Two detuned saws and one an octave down, through a low-pass that opens
+   * with the throttle; the revs climb through seven gears and drop at each change. The tyres
+   * screech (band-passed noise) as it slides.
+   */
+  engine(): { update(kmh: number, throttle: number, slide: number, distance: number): void; stop(): void } | null {
+    const { ctx } = this;
+    if (!ctx || !this.master) return null;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = 0;
+    out.connect(this.master);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.value = 3;
+    lp.connect(out);
+    const voices = [1, 1.007, 0.5].map((k, i) => {
+      const o = ctx.createOscillator();
+      o.type = i === 2 ? 'square' : 'sawtooth';
+      const g = ctx.createGain();
+      g.gain.value = i === 2 ? 0.5 : 0.35;
+      o.connect(g).connect(lp);
+      o.start(t);
+      return { o, k };
+    });
+    const hiss = ctx.createBufferSource();
+    hiss.buffer = this.noise;
+    hiss.loop = true;
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = 1900;
+    band.Q.value = 4;
+    const screech = ctx.createGain();
+    screech.gain.value = 0;
+    hiss.connect(band).connect(screech).connect(this.master);
+    hiss.start(t);
+    const GEARS = [0, 55, 95, 135, 175, 215, 255, 330];
+    return {
+      update: (kmh, throttle, slide, distance) => {
+        const now = ctx.currentTime;
+        const v = Math.abs(kmh);
+        let gear = 1;
+        while (gear < GEARS.length - 1 && v > GEARS[gear]) gear++;
+        const within = (v - GEARS[gear - 1]) / (GEARS[gear] - GEARS[gear - 1]);
+        const revs = 0.28 + 0.72 * Math.min(1, gear === 1 ? within : 0.3 + within * 0.7);
+        const f = 38 + revs * 170;
+        for (const { o, k } of voices) o.frequency.setTargetAtTime(f * k, now, 0.03);
+        lp.frequency.setTargetAtTime(350 + throttle * 2600 + revs * 600, now, 0.05);
+        const near = 1 / (1 + distance / 15);
+        out.gain.setTargetAtTime((0.05 + throttle * 0.08 + revs * 0.03) * near, now, 0.05);
+        screech.gain.setTargetAtTime(Math.min(0.12, Math.max(0, slide - 2.5) * 0.015) * near, now, 0.05);
+      },
+      stop: () => {
+        out.gain.setTargetAtTime(0, ctx.currentTime, 0.1);
+        screech.gain.setTargetAtTime(0, ctx.currentTime, 0.1);
+        for (const { o } of voices) o.stop(ctx.currentTime + 0.5);
+        hiss.stop(ctx.currentTime + 0.5);
+      },
+    };
+  }
+
   laser(on: boolean): void {
     const { ctx } = this;
     if (!ctx || !this.master) return;

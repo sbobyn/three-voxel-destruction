@@ -131,6 +131,10 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 .menu .tune { font-size: 12px; opacity: 0.75; margin-top: -4px; }
 .menu .retune { background: none; border: 1px solid rgba(255,255,255,0.2); color: inherit; border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; }
 .menu .retune:hover { border-color: #ff8a3d; }
+.menu .scenes { display: flex; gap: 8px; margin: -6px 0 16px; }
+.menu .scenes a { flex: 1; padding: 8px 0; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15); color: inherit; text-decoration: none; text-align: center; font-size: 13px; font-weight: 600; }
+.menu .scenes a:hover { border-color: #ff8a3d; }
+.menu .scenes a.on { border-color: #ff8a3d; background: rgba(255,138,61,0.12); }
 .menu .grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 14px 0 18px; font-size: 12.5px; opacity: 0.8; }
 .menu .grid b { font-weight: 600; opacity: 0.9; }
 .hud .toast { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); padding: 6px 14px; border-radius: 8px; background: rgba(14,16,20,0.6); font-size: 13px; font-weight: 600; opacity: 0; transition: opacity 300ms; }
@@ -328,9 +332,23 @@ export class Hud {
     document.body.append(this.root);
 
     this.menu.className = 'menu';
+    // Which scene, and links to each (the page's other parameters kept)
+    const track = new URLSearchParams(location.search).get('scene') === 'track';
+    const link = (scene: string | null) => {
+      const q = new URLSearchParams(location.search);
+      if (scene) q.set('scene', scene);
+      else q.delete('scene');
+      const text = q.toString();
+      return text ? `?${text}` : location.pathname;
+    };
     this.menu.innerHTML = `<div class="card">
-      <h1>Voxel City</h1>
-      <p>Every one of the city's voxels is a body in the AVBD solver, running on your GPU. Knock a hole in a tower and whatever it held up comes down.</p>
+      <h1>${track ? 'Voxel Circuit' : 'Voxel City'}</h1>
+      <p>${
+        track
+          ? 'A race car on a circuit where every wall, stand and tyre is voxels in the AVBD solver, on your GPU. Drive through them, open up the rear cannons, or get out and take the place apart on foot.'
+          : "Every one of the city's voxels is a body in the AVBD solver, running on your GPU. Knock a hole in a tower and whatever it held up comes down."
+      }</p>
+      <div class="scenes"><a href="${link(null)}" class="${track ? '' : 'on'}">City</a><a href="${link('track')}" class="${track ? 'on' : ''}">Race track</a></div>
       <div class="grid tap">
         <b>Left thumb</b><span>move · push past the ring to sprint</span>
         <b>Right thumb</b><span>drag anywhere to look</span>
@@ -345,7 +363,8 @@ export class Hud {
         <b>Tools</b><span>scroll to switch, or hold Tab for the tool wheel</span>
         <b>F</b><span>fly or walk (walking: Space jump, C crouch, Shift sprint)</span>
         <b>X</b><span>slow motion (the player moves at full speed: fly round a collapse)</span>
-        <b>T · R</b><span>time of day · rebuild the city</span>
+        <b>T · R</b><span>time of day · rebuild the ${track ? 'track' : 'city'}</span>
+        ${track ? '<b>In the car</b><span>W/S throttle and brake · A/D steer · Space handbrake · Shift boost · click fires the cannons · F gets out (and back in)</span>' : ''}
       </div>
       <div class="row"><span>Look sensitivity</span><input type="range" name="sensitivity" min="0.2" max="3" step="0.05"></div>
       <div class="row"><span>Field of view</span><input type="range" name="fov" min="60" max="110" step="1"></div>
