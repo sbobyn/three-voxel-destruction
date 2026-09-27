@@ -862,15 +862,16 @@ function tracerMesh(): THREE.Object3D {
   return m;
 }
 /**
- * In orbit, the suit's jets (jets.ts): plumes from its vents against the push (so they fire as you set off, stop or
- * turn, bigger the harder you push), and their rush of gas for as long as you steer. The vents are at the shoulders
- * and hips, a little ahead of the eye so the plumes show (m: forward, out to the side, down).
+ * In orbit, the suit's jets (jets.ts): plumes from the vents on its backpack against the push (so they fire as you
+ * set off, stop or turn, bigger the harder you push), and their rush of gas for as long as you steer. The vents are
+ * at the pack's corners, behind and beside the eye, so the gas streams into view from the suit, its vent out of
+ * sight (m: forward, out to the side, down). Only those facing the way the gas goes fire (none blow across you).
  */
 const VENTS = [
-  [0.4, 0.45, -0.3],
-  [0.4, -0.45, -0.3],
-  [0.4, 0.45, -0.6],
-  [0.4, -0.45, -0.6],
+  [-0.1, 0.3, -0.3],
+  [-0.1, -0.3, -0.3],
+  [-0.1, 0.3, -0.6],
+  [-0.1, -0.3, -0.6],
 ];
 let suitJets: SuitJets | null = null;
 function jets(dt: number, steering: boolean): void {
@@ -881,8 +882,14 @@ function jets(dt: number, steering: boolean): void {
   const away = player.thrust.clone().divideScalar(-Math.max(push, 1e-6));
   const eye = player.eye(new THREE.Vector3());
   const [c, s] = [Math.cos(player.yaw), Math.sin(player.yaw)];
+  const ahead = Math.abs(away.x * c + away.y * s);
   const vents = VENTS.map(([f, side, down]) => new THREE.Vector3(eye.x + c * f + s * side, eye.y + s * f - c * side, eye.z + down));
-  suitJets?.update(dt, vents, away, amount);
+  const amounts = VENTS.map(([, side, down]) => {
+    // The way the vent faces off the pack: out to its side, and up at the shoulders or down at the hips
+    const facing = new THREE.Vector3(s * side, -c * side, down > -0.45 ? 0.25 : -0.25).normalize();
+    return amount * Math.max(ahead, THREE.MathUtils.smoothstep(facing.dot(away), -0.2, 0.3));
+  });
+  suitJets?.update(dt, vents, amounts, away);
 }
 
 /** The afterfire at a gear change, and the exhaust's smoke (grey puffs, more under throttle). */
