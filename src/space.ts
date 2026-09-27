@@ -7,7 +7,7 @@
 
 import * as THREE from 'three/webgpu';
 import { OrbitClouds } from './orbit-clouds.ts';
-import { cameraPosition, clamp, dot, fwidth, modelPosition, mx_noise_float, positionLocal, float, floor, fract, hash, length, max, mix, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { cameraPosition, clamp, dot, fwidth, modelPosition, mx_noise_float, positionLocal, float, floor, fract, length, max, mix, mx_cell_noise_float, normalize, positionWorld, pow, reflect, select, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /** The Earth's radius (m, scaled), and how far under the station its top is. */
 export const EARTH_RADIUS = 5000;
@@ -122,7 +122,7 @@ export class SpaceSky {
     day.anisotropy = 8;
     day.wrapS = THREE.RepeatWrapping;
 
-    // The sky: stars in three sizes, hashed from the direction, and the sun's disc with its glare
+    // The sky: stars in two sizes, hashed from the direction, and the sun's disc with its glare
     const skyMat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide, depthWrite: false, fog: false });
     const dir = normalize(positionWorld.sub(cameraPosition));
     // The stars stay put in the sky the station orbits through: in its frame they wheel round with the Earth
@@ -137,7 +137,9 @@ export class SpaceSky {
     ] as const) {
       const p = fixedDir.mul(scale);
       const cell = floor(p);
-      const h = hash(cell.dot(vec3(1, 57, 113)));
+      // (A hash of the whole cell: one of its sum, x + 57y + 113z, is the same all along lines of cells, and drew
+      // the stars in dotted streaks)
+      const h = mx_cell_noise_float(cell);
       const spot = length(fract(p).sub(0.5));
       const w = fwidth(p);
       const pixel = max(w.x, max(w.y, w.z));
