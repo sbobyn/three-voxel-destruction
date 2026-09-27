@@ -84,8 +84,8 @@ export class Sounds {
     const t = ctx.currentTime;
     const { band, gain } = this.jets;
     gain.gain.cancelScheduledValues(t);
-    gain.gain.setTargetAtTime(0.04 + 0.06 * strength, t, 0.05);
-    gain.gain.setTargetAtTime(0, t + 0.08, 0.12);
+    gain.gain.setTargetAtTime(0.03 + 0.04 * strength, t, 0.05);
+    gain.gain.setTargetAtTime(0, t + 0.03, 0.04);
     band.frequency.setTargetAtTime(220 + 100 * strength, t, 0.1);
   }
 

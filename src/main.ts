@@ -866,10 +866,11 @@ function tracerMesh(): THREE.Object3D {
  */
 const JET_SPEED = 3;
 let jetDue = 0;
-function jets(dt: number): void {
+function jets(dt: number, steering: boolean): void {
   const push = player.thrust.length();
   if (push < 0.5) return;
-  sounds.jet(Math.min(push / 15, 1));
+  // (Heard only while you steer: the suit braking itself to a stop after is silent)
+  if (steering) sounds.jet(Math.min(push / 15, 1));
   jetDue -= dt * Math.min(push, 30);
   if (jetDue > 0) return;
   jetDue = 0.6 + Math.random() * 0.4;
@@ -1802,8 +1803,9 @@ function tick(now: number): void {
       } else if ((rocketsIdle += dt) > 3) car.wantRockets = false;
     } else {
       const stride = Math.floor(player.walk / Math.PI);
-      player.update(dt, input());
-      if (player.zeroG) jets(dt);
+      const move = input();
+      player.update(dt, move);
+      if (player.zeroG) jets(dt, move.forward !== 0 || move.right !== 0 || move.rise !== 0);
       // Footsteps at each half stride; a thud and a dip on landing
       if (player.onGround && Math.floor(player.walk / Math.PI) !== stride) sounds.step(keys.has('ShiftLeft'));
       if (player.landed > 4) {
