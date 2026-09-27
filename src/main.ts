@@ -57,7 +57,7 @@ interface Effects {
   impact(at: ArrayLike<number>, speed: number, tint: THREE.Color): void;
   sparks(at: ArrayLike<number>, count: number, speed: number): void;
   exhaust(at: ArrayLike<number>, amount: number): void;
-  jet(at: ArrayLike<number>, velocity: THREE.Vector3): void;
+  jet(vents: ArrayLike<number>, velocity: THREE.Vector3, amount: number): void;
   update(dt: number, camera: THREE.Camera): void;
 }
 const NO_EFFECTS: Effects = { explosion() {}, dust() {}, impact() {}, sparks() {}, exhaust() {}, jet() {}, update() {} };
@@ -860,28 +860,28 @@ function tracerMesh(): THREE.Object3D {
   return m;
 }
 /**
- * In orbit, the suit's jets: little white puffs blown out against the push (so they fire as you set off, stop or
- * turn, more the harder you push), from its shoulders and hips, a little ahead of the eye so some show; and their
- * rush of gas for as long as they fire.
+ * In orbit, the suit's jets: thin white trails streaming from its vents against the push (so they fire as you set
+ * off, stop or turn, denser the harder you push), and their rush of gas for as long as you steer. The vents are at
+ * the shoulders and hips, a little ahead of the eye so the trails show (m: forward, out to the side, down).
  */
-const JET_SPEED = 3;
-let jetDue = 0;
-function jets(dt: number, steering: boolean): void {
+const JET_SPEED = 4;
+const VENTS = [
+  [0.4, 0.45, -0.3],
+  [0.4, -0.45, -0.3],
+  [0.4, 0.45, -0.6],
+  [0.4, -0.45, -0.6],
+];
+function jets(steering: boolean): void {
   const push = player.thrust.length();
   if (push < 0.5) return;
+  const amount = Math.min(push / 15, 1);
   // (Heard only while you steer: the suit braking itself to a stop after is silent)
-  if (steering) sounds.jet(Math.min(push / 15, 1));
-  jetDue -= dt * Math.min(push, 30);
-  if (jetDue > 0) return;
-  jetDue = 0.6 + Math.random() * 0.4;
+  if (steering) sounds.jet(amount);
   const away = player.thrust.clone().divideScalar(-push);
-  const at = player.eye(new THREE.Vector3());
-  const side = Math.random() < 0.5 ? 1 : -1;
-  at.x += Math.cos(player.yaw) * 0.4 + Math.sin(player.yaw) * 0.45 * side;
-  at.y += Math.sin(player.yaw) * 0.4 - Math.cos(player.yaw) * 0.45 * side;
-  at.z -= Math.random() < 0.5 ? 0.3 : 0.6;
-  at.addScaledVector(away, 0.2);
-  effects.jet(at.toArray(), away.multiplyScalar(JET_SPEED).add(player.velocity));
+  const eye = player.eye(new THREE.Vector3()).addScaledVector(away, 0.1);
+  const [c, s] = [Math.cos(player.yaw), Math.sin(player.yaw)];
+  const at = VENTS.flatMap(([f, side, down]) => [eye.x + c * f + s * side, eye.y + s * f - c * side, eye.z + down]);
+  effects.jet(at, away.multiplyScalar(JET_SPEED).add(player.velocity), amount);
 }
 
 /** The afterfire at a gear change, and the exhaust's smoke (grey puffs, more under throttle). */
@@ -961,7 +961,7 @@ function startEffects(): Effects {
     impact: (at, speed, tint) => particles.impact(at, speed, tint),
     sparks: (at, count, speed) => particles.sparks(at, count, speed),
     exhaust: (at, amount) => particles.exhaust(at, amount),
-    jet: (at, velocity) => particles.jet(at, velocity),
+    jet: (vents, velocity, amount) => particles.jet(vents, velocity, amount),
     update: (dt, camera) => {
       if (sky) {
         sun.copy(sky.sunColor).multiplyScalar(0.45 * sky.sunIntensity());
@@ -1805,7 +1805,7 @@ function tick(now: number): void {
       const stride = Math.floor(player.walk / Math.PI);
       const move = input();
       player.update(dt, move);
-      if (player.zeroG) jets(dt, move.forward !== 0 || move.right !== 0 || move.rise !== 0);
+      if (player.zeroG) jets(move.forward !== 0 || move.right !== 0 || move.rise !== 0);
       // Footsteps at each half stride; a thud and a dip on landing
       if (player.onGround && Math.floor(player.walk / Math.PI) !== stride) sounds.step(keys.has('ShiftLeft'));
       if (player.landed > 4) {

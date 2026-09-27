@@ -98,7 +98,7 @@ const LIFE: [number, number][] = [
   [0.6, 1.2], // smouldering flame
   [1.2, 3], // sparks
   [0.7, 1.4], // exhaust wisps
-  [0.5, 1], // a suit jet's puffs
+  [0.4, 0.7], // a suit jet's wisps
 ];
 
 /**
@@ -484,13 +484,17 @@ export class Particles {
     this.queue([Burst.Exhaust, 0.1 + amount * 0.12, 1, 1, 0.86, 0.86, 0.88, 0.3 + amount * 0.15, at[0], at[1], at[2], this.quality.size], [at[0], at[1], at[2]], n);
   }
 
-  /** A puff from a suit's jet at `at`, blown at `velocity` (m/s): a couple of small white wisps, swelling as they go. */
-  jet(at: ArrayLike<number>, velocity: THREE.Vector3): void {
+  /**
+   * A frame of a suit's jets: from each vent (`vents`, xyz each) a small, dense wisp blown at `velocity` (m/s), so
+   * frame on frame they string out into thin trails; `amount` (0..1) thickens them.
+   */
+  jet(vents: ArrayLike<number>, velocity: THREE.Vector3, amount: number): void {
     const speed = velocity.length();
     if (speed === 0) return;
-    // (The burst's centre a step back along the jet: the puffs fly out from it, through `at`)
-    const [x, y, z] = [at[0] - velocity.x / speed, at[1] - velocity.y / speed, at[2] - velocity.z / speed];
-    this.queue([Burst.Jet, 0.14, speed, 1, 0.94, 0.94, 0.96, 0.45, x, y, z, this.quality.size], [at[0], at[1], at[2]], Math.max(1, Math.round(2 * this.quality.count)));
+    // (The burst's centre far back along the jet, so the wisps from every vent fly out alike, through their vent)
+    const back = 1000 / speed;
+    const [x, y, z] = [vents[0] - velocity.x * back, vents[1] - velocity.y * back, vents[2] - velocity.z * back];
+    this.queue([Burst.Jet, 0.035, speed, 1, 0.95, 0.95, 0.97, 0.45 + 0.35 * amount, x, y, z, this.quality.size], vents, vents.length / 3);
   }
 
   /** Lingering smoke source (e.g. burning spot) for `seconds`. */
@@ -767,12 +771,13 @@ export class Particles {
           growth.assign(size.mul(0.8));
         })
         .ElseIf(type.equal(Burst.Jet), () => {
-          // Out of the nozzle along its line (from the burst's centre through it), in a narrow cone
-          pos.assign(origin.add(ball.mul(0.03)));
-          vel.assign(normalize(origin.sub(b2.xyz)).add(ball.mul(0.2)).mul(speed.mul(rnd(3).mul(0.4).add(0.8))));
-          radius.assign(size.mul(rnd(5).mul(0.5).add(0.5)));
+          // Out of the vent along its line (from the burst's centre through it), in a tight cone: a thin trail,
+          // widening a little as it goes
+          pos.assign(origin.add(ball.mul(0.01)));
+          vel.assign(normalize(origin.sub(b2.xyz)).add(ball.mul(0.06)).mul(speed.mul(rnd(3).mul(0.2).add(0.9))));
+          radius.assign(size.mul(rnd(5).mul(0.4).add(0.8)));
           kind.assign(Kind.Dust);
-          growth.assign(size.mul(3));
+          growth.assign(size.mul(1.5));
         })
         .ElseIf(type.equal(Burst.Smoulder), () => {
           pos.assign(origin.add(ball.mul(0.5)));
