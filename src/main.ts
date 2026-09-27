@@ -889,7 +889,7 @@ function jets(dt: number, steering: boolean): void {
     const facing = new THREE.Vector3(s * side, -c * side, down > -0.45 ? 0.25 : -0.25).normalize();
     return amount * Math.max(ahead, THREE.MathUtils.smoothstep(facing.dot(away), -0.2, 0.3));
   });
-  suitJets?.update(dt, vents, amounts, away);
+  suitJets?.update(dt, eye, player.velocity, vents, amounts, away);
 }
 
 /** The afterfire at a gear change, and the exhaust's smoke (grey puffs, more under throttle). */
