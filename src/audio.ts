@@ -11,7 +11,8 @@ export class Sounds {
   /** Your own suit's sounds, beside the master (its own volume), muffled less: heard through the suit, not the hull. */
   private suit: GainNode | null = null;
   private suitFilter: BiquadFilterNode | null = null;
-  private lastJet = 0;
+  /** The jets' rush: one looping noise, its level and band set each frame they fire. */
+  private jets: { band: BiquadFilterNode; gain: GainNode } | null = null;
   private noise: AudioBuffer | null = null;
   volume = 0.7;
   /**
@@ -60,30 +61,32 @@ export class Sounds {
   }
 
   /**
-   * A puff from the suit's jets (`strength` 0..1): a soft, low "pfff", gas through a band falling as the valve shuts,
-   * swelling in and dying away. At most one every 0.3 s, so a long push is slow breaths, not a patter.
+   * The suit's jets (`strength` 0..1; call each frame they fire): a steady, low rush of gas while they do, swelling
+   * with the push, brighter the harder. Unless called again it dies away by itself (so it stops with the frames).
    */
   jet(strength: number): void {
     const { ctx } = this;
-    if (!ctx || !this.suit || ctx.currentTime - this.lastJet < 0.3) return;
-    this.lastJet = ctx.currentTime;
+    if (!ctx || !this.suit || !this.noise) return;
+    if (!this.jets) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.loop = true;
+      src.playbackRate.value = 0.7;
+      const band = ctx.createBiquadFilter();
+      band.type = 'bandpass';
+      band.Q.value = 0.7;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(band).connect(gain).connect(this.suit);
+      src.start();
+      this.jets = { band, gain };
+    }
     const t = ctx.currentTime;
-    const seconds = 0.3 + 0.15 * strength + Math.random() * 0.08;
-    const src = ctx.createBufferSource();
-    src.buffer = this.noise;
-    src.playbackRate.value = 0.7 + Math.random() * 0.1;
-    const bp = ctx.createBiquadFilter();
-    bp.type = 'bandpass';
-    bp.Q.value = 0.7;
-    const f = 550 + Math.random() * 100;
-    bp.frequency.setValueAtTime(f, t);
-    bp.frequency.exponentialRampToValueAtTime(f * 0.5, t + seconds);
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.12 + 0.14 * strength, t + 0.05);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + seconds);
-    src.connect(bp).connect(g).connect(this.suit);
-    src.start(t, Math.random() * 2, seconds + 0.05);
+    const { band, gain } = this.jets;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setTargetAtTime(0.1 + 0.15 * strength, t, 0.05);
+    gain.gain.setTargetAtTime(0, t + 0.08, 0.12);
+    band.frequency.setTargetAtTime(420 + 260 * strength, t, 0.1);
   }
 
   /** Noise through a low-pass falling from `from` to `to` Hz over `seconds`, at `gain`. */
