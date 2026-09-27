@@ -77,7 +77,7 @@ export class Sounds {
   /**
    * Tyres screeching (`amount` 0..1; call each frame they slide). Rubber stick-slipping on tarmac sings: a buzzy,
    * harmonic tone (a few detuned oscillators, their pitch jittering at random, not a smooth wobble), chattering in
-   * level as the tread grips and lets go, roughened by a little distortion, brightest round 1.5 kHz; under it the
+   * level as the tread grips and lets go, roughened by a little distortion, brightest round 2.6 kHz; under it the
    * hiss of the rubber and the low scrub. Harder slides are higher, louder and rougher. Unless called again it dies
    * away by itself.
    */
@@ -101,7 +101,7 @@ export class Sounds {
       };
       // The tone: detuned oscillators whose pitch jitters (slow noise into their frequency)
       const tone = ctx.createGain();
-      const jitter = noise(18);
+      const jitter = noise(30);
       const oscillators = SQUEAL.map(([ratio, type, level]) => {
         const o = ctx.createOscillator();
         o.type = type;
@@ -119,14 +119,14 @@ export class Sounds {
       chatter.gain.value = 0.55;
       const flutter = ctx.createGain();
       flutter.gain.value = 6;
-      noise(70).connect(flutter).connect(chatter.gain);
-      // Rough, then brightest round 1.5 kHz (no rumble in the tone, no fizz above it)
+      noise(120).connect(flutter).connect(chatter.gain);
+      // Rough, then brightest round 2.6 kHz (no rumble in the tone, no fizz above it)
       const rough = ctx.createWaveShaper();
       rough.curve = Float32Array.from({ length: 1024 }, (_, i) => Math.tanh(((i / 1023) * 2 - 1) * 2.5));
       const body = ctx.createBiquadFilter();
       body.type = 'bandpass';
-      body.frequency.value = 1500;
-      body.Q.value = 0.9;
+      body.frequency.value = 2600;
+      body.Q.value = 0.8;
       tone.connect(chatter).connect(rough).connect(body).connect(out);
       // The rubber's hiss and the scrub
       const hiss = ctx.createBiquadFilter();
@@ -144,9 +144,9 @@ export class Sounds {
     out.gain.cancelScheduledValues(t);
     out.gain.setTargetAtTime(0.12 + 0.14 * amount, t, 0.05);
     out.gain.setTargetAtTime(0, t + 0.06, 0.1);
-    for (const { o, ratio } of oscillators) o.frequency.setTargetAtTime((720 + 260 * amount) * ratio, t, 0.08);
+    for (const { o, ratio } of oscillators) o.frequency.setTargetAtTime((1400 + 400 * amount) * ratio, t, 0.08);
     hissLevel.gain.setTargetAtTime(0.15 + 0.3 * amount, t, 0.05);
-    scrubLevel.gain.setTargetAtTime(0.8 + 0.8 * amount, t, 0.05);
+    scrubLevel.gain.setTargetAtTime(0.5 + 0.5 * amount, t, 0.05);
   }
 
   /**
