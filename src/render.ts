@@ -149,7 +149,7 @@ async function loadSurfaces(onFile: (done: number, total: number) => void = () =
   const layers = await Promise.all(
     SETS.flatMap((set) =>
       maps.map(async (map) => {
-        const blob = await (await fetch(`textures/${set.id}_${map}_1k.jpg`)).blob();
+        const blob = await (await fetch(`textures/${set.id}_${map}_1k.webp`)).blob();
         const bitmap = await createImageBitmap(blob, { imageOrientation: 'flipY' });
         const canvas = new OffscreenCanvas(TEXTURE_SIZE, TEXTURE_SIZE);
         const ctx = canvas.getContext('2d')!;
