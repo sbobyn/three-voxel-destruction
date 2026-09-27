@@ -291,7 +291,7 @@ export class Car {
     const f = this.forward;
     const side = new THREE.Vector2(-f.y, f.x);
     let along = this.velocity.dot(f);
-    let across = this.velocity.dot(side);
+    const across = this.velocity.dot(side);
     // Engine and brakes: strong off the line, fading towards top speed; braking, then reverse
     const top = d.boost ? 95 : 78;
     if (d.throttle > 0) {
@@ -313,13 +313,15 @@ export class Car {
     const target = (along / wheelbase) * Math.tan(this.steer) * (d.handbrake ? 1.45 : 1);
     this.yawRate += (target - this.yawRate) * Math.min(1, dt * (d.handbrake ? 3 : 9));
     this.heading += this.yawRate * dt;
-    // Grip: sideways sliding dies away fast, slowly under the handbrake (a drift)
-    across *= Math.exp(-dt * (d.handbrake ? 1.6 : 11));
-    this.slip = Math.abs(across);
-    // The velocity, in the new heading's frame (the grip turns it with the car)
+    // The velocity keeps its way as the car turns under it: what's now sideways to the new
+    // heading is sliding, and the grip takes that away (fast; slowly under the handbrake: a drift)
+    this.velocity.copy(f.multiplyScalar(along)).add(side.multiplyScalar(across));
     const nf = this.forward;
     const ns = new THREE.Vector2(-nf.y, nf.x);
-    this.velocity.copy(nf.multiplyScalar(along)).add(ns.multiplyScalar(across));
+    const on = this.velocity.dot(nf);
+    const slide = this.velocity.dot(ns) * Math.exp(-dt * (d.handbrake ? 1.6 : 11));
+    this.slip = Math.abs(slide);
+    this.velocity.copy(nf.multiplyScalar(on)).add(ns.multiplyScalar(slide));
     this.position.x += this.velocity.x * dt;
     this.position.y += this.velocity.y * dt;
     this.roll += (along / (2.7 * CELL)) * dt;

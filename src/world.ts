@@ -36,8 +36,8 @@ export interface Building {
   h: number;
   /** Voxel index at each cell (x + w (y + d z)), or -1. */
   cells: Int32Array;
-  /** What it is, where that matters (a car's alarm goes off when it's hit). */
-  kind?: 'car';
+  /** What it is, where that matters (a car's alarm goes off when it's hit; an obstacle is on the race track's line on purpose). */
+  kind?: 'car' | 'obstacle';
 }
 
 export interface City {

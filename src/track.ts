@@ -163,6 +163,7 @@ export function buildTrack(seed = 11): { city: City; line: TrackLine } {
 
   // The brick wall right across the main straight, 160 m after the start: the first thing to drive through
   brickWall(w, P(s0 + 160)[0], P(s0 + 160)[1]);
+  w.last().kind = 'obstacle';
   // The start gantry over the line
   gantry(w, P(s0)[0], P(s0)[1]);
   // The grandstand along the outside of the main straight, the pit garages inside it behind the pit wall
@@ -173,14 +174,22 @@ export function buildTrack(seed = 11): { city: City; line: TrackLine } {
   tyreWalls(w, line, half + KERB + RUNOFF - 1);
   // A crate pyramid on the exit of the fast right-hander, oil drums at the chicane, cones in a slalom
   crates(w, ...(beside(Math.round(n * 0.47), 1.5) as [number, number]));
+  w.last().kind = 'obstacle';
   for (const [f, side] of [
     [0.4, -4],
     [0.42, 3],
   ] as [number, number][])
+  {
     drums(w, ...(beside(Math.round(n * f), side) as [number, number]));
-  for (let k = 0; k < 10; k++) cone(w, ...(beside(s0 + 60 + k * 8, k % 2 ? 3 : -3) as [number, number]));
+    w.last().kind = 'obstacle';
+  }
+  for (let k = 0; k < 10; k++) {
+    cone(w, ...(beside(s0 + 60 + k * 8, k % 2 ? 3 : -3) as [number, number]));
+    w.last().kind = 'obstacle';
+  }
   // A truck broadside across the track on the back section
   truck(w, ...(beside(Math.round(n * 0.62), 0) as [number, number]), T(Math.round(n * 0.62)));
+  w.last().kind = 'obstacle';
   // A footbridge over the straight at the top left
   const bridgeAt = Math.round(n * 0.75);
   footbridge(w, P(bridgeAt)[0], P(bridgeAt)[1], T(bridgeAt));

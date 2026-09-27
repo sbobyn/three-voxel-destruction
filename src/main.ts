@@ -239,9 +239,13 @@ addEventListener('mousemove', (e) => {
 const look = { x: 0, y: 0, sx: 0, sy: 0 };
 /** F: into the car or out of it (at the track, near it), else flying or walking. */
 function pressF(): void {
-  if (car && (driving || player.position.distanceTo(car.position) < 6)) setDriving(!driving);
+  if (car && (driving || player.position.distanceTo(car.position) < GET_IN)) setDriving(!driving);
   else toggleFly();
 }
+/** How near the car (m) F gets in. */
+const GET_IN = 8;
+/** Near enough to get in, last frame (the prompt shows as the player comes up to it). */
+let byCar = false;
 /** Into the car (the chase view behind it) or out of it (standing by its door, on foot). */
 function setDriving(on: boolean): void {
   if (!car) return;
@@ -261,6 +265,8 @@ function setDriving(on: boolean): void {
   player.yaw = car.heading;
   player.pitch = 0;
   car.wantGuns = false;
+  byCar = true;
+  hud.toast('On foot · F by the car to get back in');
 }
 function toggleFly(): void {
   player.flying = !player.flying;
@@ -659,7 +665,11 @@ function placeCar(): void {
 
 /** The car's controls: keys and the thumb stick (throttle up, steer across), or coasting to a stop with no one in it. */
 function driveInput(): Drive {
-  if (!driving || !playing) return { throttle: 0, steer: 0, handbrake: true, boost: false };
+  // No one in it: it brakes to a stop (full brakes, not a crawl on the handbrake)
+  if (!driving || !playing) {
+    const along = car ? car.speed : 0;
+    return { throttle: along > 0.3 ? -1 : along < -0.3 ? 1 : 0, steer: 0, handbrake: false, boost: false };
+  }
   const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
   const clamp = (v: number) => Math.max(-1, Math.min(1, v));
   const stick = touch?.move ?? { forward: 0, right: 0 };
@@ -1703,6 +1713,10 @@ function tick(now: number): void {
   view.glow = Math.max(0.35, (view as unknown as { bloomPass: { strength: { value: number } } }).bloomPass.strength.value - dt * 1.5);
   const aim = raycast(city, eye.toArray(), dir.toArray(), driving ? CANNON.reach : TOOLS[tool].reach || 3);
   if (driving && car) hud.speed(car.speed * 3.6, boostLeft);
+  // Walking up to the car: say how to get in
+  const near = !!car && !driving && player.position.distanceTo(car.position) < GET_IN;
+  if (near && !byCar) hud.toast(touch ? 'Tap the fly button to get in' : 'F to get in');
+  byCar = near;
   if (car) {
     engine ??= sounds.engine();
     const throttle = driving && playing ? Math.max(0, driveInput().throttle) : 0;
