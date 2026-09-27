@@ -85,7 +85,7 @@ export type ParticleQuality = 'low' | 'medium' | 'high';
 const Kind = { Fire: 0, Smoke: 1, Dust: 2, Spark: 3 } as const;
 
 /** How a burst's particles are placed and launched (the spawn kernel). */
-const Burst = { Fireball: 0, Smoke: 1, DustRing: 2, Crumble: 3, Impact: 4, Smoulder: 5, Flame: 6, Sparks: 7, Exhaust: 8 } as const;
+const Burst = { Fireball: 0, Smoke: 1, DustRing: 2, Crumble: 3, Impact: 4, Smoulder: 5, Flame: 6, Sparks: 7, Exhaust: 8, Trail: 9 } as const;
 
 /** Each burst type's lifetime range (s) before its life scale; the live count mirrors it. */
 const LIFE: [number, number][] = [
@@ -98,6 +98,7 @@ const LIFE: [number, number][] = [
   [0.6, 1.2], // smouldering flame
   [1.2, 3], // sparks
   [0.7, 1.4], // exhaust wisps
+  [0.5, 1.3], // a debris trailer's wake
 ];
 
 /**
@@ -141,6 +142,9 @@ const DUST_BUDGET = 160;
  * screen, costs a few fragment quads). Fire and blast smoke are never thinned.
  */
 const LIVE_BUDGET = 5000;
+/** Debris trailers: at most this many from a blast (and three blasts' worth about at once), a wake puff every TRAIL_STEP m. */
+const TRAILERS = 5;
+const TRAIL_STEP = 0.45;
 
 /** Planck's law at three wavelengths (µm) standing in for linear sRGB's primaries. */
 const LAMBDA = [0.61, 0.55, 0.465];
@@ -362,6 +366,8 @@ export class Particles {
   private readonly batches: Batch[] = [];
   private readonly fires: FireLight[] = [];
   private readonly smoulders: { at: THREE.Vector3; until: number; smoke: number; flame: number }[] = [];
+  /** Debris trailers: burning chunks flung out of a blast, each leaving a wake of fire and smoke as it arcs away. */
+  private readonly trailers: { at: THREE.Vector3; velocity: THREE.Vector3; age: number; life: number; size: number; carry: number }[] = [];
   private readonly spawnData: Float32Array;
   private readonly burstData: Float32Array;
 
@@ -421,6 +427,14 @@ export class Particles {
     this.queue([Burst.Smoke, r, 3.5 * speed * (vacuum ? 2 : 1), life * held, 0.4, 0.38, 0.35, 0.85 * thick, x, y, z, s], [x, y, z], Math.round(14 * f * (vacuum ? 0.5 : 1)));
     this.queue([Burst.Fireball, r, 7 * speed, life * (vacuum ? 0.25 : 1), 0.3, 0.29, 0.27, 0.9 * thick, x, y, z, s], [x, y, z], Math.round(16 * f));
     this.queue([Burst.Sparks, r, 13 * speed, 1, 1, 1, 1, 0.9, x, y, z, 1], [x, y, z], Math.round(30 * f));
+    // A few burning chunks thrown out of anything bigger than a bang, arcing off (outward and up; in vacuum, any way)
+    const chunks = r < 0.8 ? 0 : Math.round(Math.min(TRAILERS, 2 + 2 * r) * this.quality.count);
+    for (let k = 0; k < chunks && this.trailers.length < TRAILERS * 3; k++) {
+      const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+      if (!vacuum) dir.z = Math.abs(dir.z) * 0.8 + 0.25;
+      const velocity = dir.normalize().multiplyScalar((6 + Math.random() * 8) * Math.sqrt(r));
+      this.trailers.push({ at: new THREE.Vector3(x, y, z), velocity, age: 0, life: 0.9 + Math.random() * 0.9, size: 0.28 + 0.1 * r, carry: 0 });
+    }
     this.fires.push({ at: new THREE.Vector3(x, y, z), t0: this.clock, radius: r, until: this.clock + 1.2 * Math.sqrt(r) });
   }
 
@@ -508,6 +522,7 @@ export class Particles {
     if (wind) this.wind.value.copy(wind);
     else this.wind.value.set(0, 0, 0);
     this.smoulderStep(dt);
+    this.trailerStep(dt);
     this.lightStep();
 
     // The shadow grid sits ahead of the camera, on the ground, snapped to its cells
@@ -534,6 +549,7 @@ export class Particles {
     this.batches.length = 0;
     this.fires.length = 0;
     this.smoulders.length = 0;
+    this.trailers.length = 0;
     this.flash.intensity = 0;
     this.renderer.compute(this.clearNode);
   }
@@ -620,6 +636,41 @@ export class Particles {
       s.flame -= flame;
       this.queue([Burst.Smoulder, 1, 1, 1, 0.15, 0.15, 0.15, 0.5, x, y, z, this.quality.size], [x, y, z], smoke);
       this.queue([Burst.Flame, 1, 1, 1, 0.2, 0.2, 0.2, 0.8, x, y, z, this.quality.size], [x, y, z], flame);
+    }
+  }
+
+  /**
+   * Fly the debris trailers on (falling, slowed by the air; in vacuum straight on) and drop their wake: a puff every
+   * TRAIL_STEP m along the way, fire while the chunk's hot and smoke as it cools, farther apart and bigger when
+   * there are many particles about. Gone when burnt out or down.
+   */
+  private trailerStep(dt: number): void {
+    if (!this.trailers.length) return;
+    const thin = this.thin();
+    const drag = Math.exp(-dt * 0.8 * this.air.value);
+    for (let i = this.trailers.length - 1; i >= 0; i--) {
+      const t = this.trailers[i];
+      const [x0, y0, z0] = [t.at.x, t.at.y, t.at.z];
+      t.velocity.z -= 9.81 * this.gravity.value * dt;
+      t.velocity.multiplyScalar(drag);
+      t.at.addScaledVector(t.velocity, dt);
+      t.age += dt;
+      if (t.age >= t.life || t.at.z < this.groundHeight) {
+        this.trailers.splice(i, 1);
+        continue;
+      }
+      t.carry += Math.hypot(t.at.x - x0, t.at.y - y0, t.at.z - z0) / (TRAIL_STEP / thin.keep);
+      const n = Math.floor(t.carry);
+      if (n === 0) continue;
+      t.carry -= n;
+      const origins = new Float32Array(n * 3);
+      for (let k = 0; k < n; k++) {
+        const f = (k + 1) / n;
+        origins.set([x0 + (t.at.x - x0) * f, y0 + (t.at.y - y0) * f, z0 + (t.at.z - z0) * f], 3 * k);
+      }
+      const spent = t.age / t.life;
+      const heat = (1 - spent) ** 1.5;
+      this.queue([Burst.Trail, t.size * (1 + spent) * thin.grow, heat, 1, 0.24, 0.23, 0.22, 0.75 - 0.3 * spent, x0, y0, z0, this.quality.size], origins, n);
     }
   }
 
@@ -755,6 +806,21 @@ export class Particles {
           radius.assign(size.mul(rnd(5).mul(0.5).add(0.5)));
           kind.assign(Kind.Dust);
           growth.assign(size.mul(0.8));
+        })
+        .ElseIf(type.equal(Burst.Trail), () => {
+          // A trailer's wake, left where it was dropped and spreading: fire at the burning chunk while it's hot
+          // (how hot rides in the speed slot), smoke behind it as it cools
+          pos.assign(origin.add(ball.mul(size.mul(0.3))));
+          vel.assign(ball.mul(0.4));
+          radius.assign(size.mul(rnd(5).mul(0.4).add(0.8)));
+          If(rnd(11).lessThan(speed), () => {
+            kind.assign(Kind.Fire);
+            temp.assign(rnd(12).mul(500).add(1400));
+            cooling.assign(2.5);
+            growth.assign(size.mul(0.6));
+          }).Else(() => {
+            growth.assign(size.mul(1.4));
+          });
         })
         .ElseIf(type.equal(Burst.Smoulder), () => {
           pos.assign(origin.add(ball.mul(0.5)));
