@@ -262,5 +262,8 @@ export class SpaceSky {
     }
   }
 
-  setQuality(_quality: string): void {}
+  /** The clouds' detail to the device's quality (they're what costs most in orbit). */
+  setQuality(quality: string): void {
+    this.clouds.setQuality(quality);
+  }
 }

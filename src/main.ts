@@ -608,7 +608,7 @@ async function start(): Promise<void> {
   smoke?.clear();
 
   await loader.stage(5);
-  const key = deviceKey(view.adapterInfo);
+  const key = deviceKey(view.adapterInfo, SCENE);
   profile = new URLSearchParams(location.search).has('retune') ? null : savedProfile(key);
   if (profile) loader.detail('Tuned for this device already');
   else {
