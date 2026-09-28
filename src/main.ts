@@ -1128,7 +1128,7 @@ function timeWork(device: GPUDevice, started: number): void {
  * debris is thinned a step (over the cap, the farthest settles as rubble or goes in a puff of chips) rather than the
  * resolution lowered, and allowed back once they are quick again.
  */
-const LOADS = [1, 0.6, 0.35];
+const LOADS = [1, 0.7, 0.45];
 let loadStep = 0;
 /** The device's loose voxels at most (its profile's), before the load steps. */
 let fullLooseCap = 8000;
@@ -1154,7 +1154,8 @@ function adaptSmoke(dt: number): void {
   }
   slowFor = frameMs > slow ? slowFor + dt : 0;
   quickFor = quick ? quickFor + dt : 0;
-  if (slowFor > 0.5 && loadStep < LOADS.length - 1) {
+  // (A second of slow frames, not a moment's: a collapse's brief dip shouldn't cost it its debris)
+  if (slowFor > 1 && loadStep < LOADS.length - 1) {
     setLoad(loadStep + 1);
     slowFor = 0;
   } else if (quickFor > 4 && loadStep > 0) {
