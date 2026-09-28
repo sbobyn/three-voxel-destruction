@@ -106,6 +106,8 @@ body.touch .menu .desk, body:not(.touch) .menu .tap { display: none; }
 @media (orientation: portrait) {
   body.touch .hud .dock { top: calc(env(safe-area-inset-top) + 58px); bottom: auto; width: min(300px, calc(100vw - 32px)); }
   body.touch .hud .picked { top: calc(env(safe-area-inset-top) + 132px); bottom: auto; }
+  /* (Driving, the speedo takes the tool bar's place at the top: at the bottom, the thumb buttons' arc covered it) */
+  body.touch .hud .speedo { top: calc(env(safe-area-inset-top) + 58px); bottom: auto; }
 }
 .hud .stats { position: absolute; right: 14px; top: 12px; font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; text-shadow: 0 1px 3px #000; opacity: 0.85; white-space: pre; }
 .hud .flash { position: absolute; inset: 0; background: radial-gradient(circle, rgba(255,210,150,0.35), rgba(255,140,60,0) 70%); opacity: 0; transition: opacity 400ms ease-out; }
