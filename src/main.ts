@@ -23,7 +23,7 @@ import { ViewModel } from './viewmodel.ts';
 import { buildCity, type City, emptyCity, isGlass, Mat, raycast, VOXEL, voxelAt } from './world.ts';
 import { buildTrack, gridSlot, KERB, RUNOFF, TRACK_WIDTH, trackField, type TrackLine } from './track.ts';
 import { CAR_MASS, CAR_SIZE, CLEARANCE, Car, type Drive, sweep } from './car.ts';
-import { chooseProfile, type DeviceProfile, deviceKey, forgetProfile, measureFrames, measurePhysics, type Quality, saveProfile, savedProfile } from './calibrate.ts';
+import { CAP_MIN, chooseProfile, type DeviceProfile, deviceKey, forgetProfile, measureFrames, measurePhysics, type Quality, saveProfile, savedProfile } from './calibrate.ts';
 import { Flames } from './flames.ts';
 import { SuitJets } from './jets.ts';
 import { SkidMarks } from './skids.ts';
@@ -667,7 +667,8 @@ async function tune(device: GPUDevice, key: string): Promise<DeviceProfile> {
 
 /** Use the device's tuning: the physics' limits, the particles' budget, and (under Auto) the drawing. */
 function applyProfile(p: DeviceProfile): void {
-  looseCap = p.looseCap;
+  fullLooseCap = p.looseCap;
+  setLoad(loadStep);
   physics.solver.params.iterations = p.iterations;
   if (smoke) smoke.budget = p.particles;
   applySettings();
@@ -1096,8 +1097,8 @@ let sky: Sky;
  * The smoke and dust, and the quality it's drawn at: the setting's, a step lower while a
  * thick cloud slows frames. The smoke has its own reduced-resolution pass and a budget of
  * live particles (particles.ts), so a collapse now costs at most a refresh here and there; if
- * frames are still slow for a while, the render resolution comes down a step as a last resort,
- * and back once they are quick again.
+ * frames are still slow for a while, the physics sheds loose voxels (the resolution stays full),
+ * and takes them back once they are quick again.
  */
 let smoke: Particles | null = null;
 let smokeLevel: Settings['quality'] = 'high';
@@ -1122,9 +1123,19 @@ function timeWork(device: GPUDevice, started: number): void {
     timingWork = false;
   });
 }
-/** Resolution steps: full, and two thirds (pixel ratio 1.5 to 1: a half step still dropped frames). */
-const SCALES = [1, 0.66];
-let scaleStep = 0;
+/**
+ * The physics' load steps, as shares of the device's loose voxels (profile.looseCap): if frames are still slow, the
+ * debris is thinned a step (over the cap, the farthest settles as rubble or goes in a puff of chips) rather than the
+ * resolution lowered, and allowed back once they are quick again.
+ */
+const LOADS = [1, 0.6, 0.35];
+let loadStep = 0;
+/** The device's loose voxels at most (its profile's), before the load steps. */
+let fullLooseCap = 8000;
+function setLoad(step: number): void {
+  loadStep = step;
+  looseCap = Math.max(CAP_MIN, Math.round(fullLooseCap * LOADS[step]));
+}
 function adaptSmoke(dt: number): void {
   if (!smoke) return;
   frameMs += (dt * 1000 - frameMs) * 0.12;
@@ -1143,11 +1154,11 @@ function adaptSmoke(dt: number): void {
   }
   slowFor = frameMs > slow ? slowFor + dt : 0;
   quickFor = quick ? quickFor + dt : 0;
-  if (slowFor > 0.5 && scaleStep < SCALES.length - 1) {
-    view.setResolutionScale(SCALES[++scaleStep]);
+  if (slowFor > 0.5 && loadStep < LOADS.length - 1) {
+    setLoad(loadStep + 1);
     slowFor = 0;
-  } else if (quickFor > 4 && scaleStep > 0) {
-    view.setResolutionScale(SCALES[--scaleStep]);
+  } else if (quickFor > 4 && loadStep > 0) {
+    setLoad(loadStep - 1);
     quickFor = 0;
   }
 }
