@@ -7,8 +7,8 @@
 // voxel); rubble has far fewer (about 2 a loose voxel, measured in a collapse), so the time per
 // contact, at CONTACTS_PER_LOOSE a loose voxel, sets how many loose voxels the game allows so
 // a step fits PHYSICS_MS; a slow GPU also gets fewer solver iterations. Drawing: the real scene with a smoke cloud in view, drawn at
-// high, then medium, then low quality until a frame fits RENDER_MS, and at a lower resolution
-// if even low doesn't. Both leave room for each other inside a 60 fps frame. The result is kept
+// high, then medium, then low quality until a frame fits RENDER_MS, always at full resolution (a
+// device slower still sheds physics instead: main.ts lowers the loose voxels while frames are slow). The result is kept
 // per device (the GPU and the screen) and scene (orbit's clouds cost far more a pixel than the
 // city), so later loads of it skip it.
 
@@ -36,15 +36,19 @@ export interface DeviceProfile {
   frameMs: number;
 }
 
-const VERSION = 4;
+const VERSION = 5;
 const STORE = 'city.profile';
-/** Budgets inside a 60 fps frame (16.7 ms): drawing a heavy frame, and one physics step. */
-const RENDER_MS = 10;
+/**
+ * Budgets inside a 60 fps frame (16.7 ms): a heavy frame, and one physics step. The frame is timed start to finish
+ * (the game's work, then the GPU's), which overstates what a frame costs once the two overlap: at 10 ms a Mac that
+ * plays well at high was put on low at 65% resolution.
+ */
+const RENDER_MS = 14;
 const PHYSICS_MS = 4.5;
 /** Contacts a loose voxel brings, for the budget (rubble measured about 2: a margin). */
 const CONTACTS_PER_LOOSE = 3;
 /** Loose voxels, fewest and most, whatever the measurement. */
-const CAP_MIN = 1200;
+export const CAP_MIN = 1200;
 const CAP_MAX = 8000;
 
 /** This device: its GPU and its screen (a different window size draws a different number of pixels), in `scene`. */
@@ -164,13 +168,11 @@ export async function chooseProfile(
   }
   looseCap = Math.round(Math.min(CAP_MAX, Math.max(CAP_MIN, looseCap)));
 
-  // Drawing: the best quality whose heavy frame fits, then lower resolutions of low
+  // Drawing: the best quality whose heavy frame fits, at full resolution
   const tries: [Quality, number][] = [
     ['high', 1],
     ['medium', 1],
     ['low', 1],
-    ['low', 0.8],
-    ['low', 0.65],
   ];
   let chosen: [Quality, number] = tries[tries.length - 1];
   let frameMs = Infinity;
