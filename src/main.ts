@@ -2187,6 +2187,13 @@ Object.assign(window, {
 });
 
 addEventListener('resize', () => view.resize(innerWidth, innerHeight));
+// Leaving the page (each scene is a page of its own): its GPU memory goes now. iOS Safari keeps a page it leaves, for
+// Back, buffers and all, and the next scene, starting alongside it, ran out of memory ("range ... out of bounds").
+// A page it brings back from there has no GPU left, so it loads afresh.
+addEventListener('pagehide', () => (view.renderer.backend as unknown as { device?: GPUDevice }).device?.destroy());
+addEventListener('pageshow', (e) => {
+  if (e.persisted) location.reload();
+});
 view.resize(innerWidth, innerHeight);
 start().catch((e: unknown) => {
   console.error(e);
