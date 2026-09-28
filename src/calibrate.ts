@@ -36,7 +36,7 @@ export interface DeviceProfile {
   frameMs: number;
 }
 
-const VERSION = 3;
+const VERSION = 4;
 const STORE = 'city.profile';
 /** Budgets inside a 60 fps frame (16.7 ms): drawing a heavy frame, and one physics step. */
 const RENDER_MS = 10;
