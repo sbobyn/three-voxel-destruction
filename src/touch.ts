@@ -3,7 +3,7 @@
 // when flying), and on the right, drag anywhere to look, the view following the thumb as a
 // mouse would (a stick that turns at a rate felt sluggish to aim with). The fire button shows
 // the tool in hand; dragging from it keeps turning the view, so you aim while firing. Around it
-// in an arc: aim (tap to toggle), jump or up, crouch or down. Small icon buttons at the top
+// in an arc: aim (tap to toggle), jump or up, crouch or down (in the car, handbrake and boost). Small icon buttons at the top
 // right fly or walk and pause. Minimal: the stick rests as a faint ring, and nothing else is on
 // screen. Pointer events, each finger followed by its id, so moving, looking and firing work
 // together. Laid out for landscape and portrait by CSS (orientation queries).
@@ -68,6 +68,9 @@ const ICONS = {
   pause: `<svg viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></svg>`,
   fly: `<svg viewBox="0 0 24 24"><path d="M3 13c4-1 6-5 9-9 0 5 2 7 9 8-6 1-8 3-9 8-2-4-5-6-9-7z"/></svg>`,
   walk: `<svg viewBox="0 0 24 24"><circle cx="13" cy="4.5" r="1.8"/><path d="M11 21l2-6-3-3 1-4 4 3 3 1"/><path d="M9 8l-3 4"/><path d="M13 15l3 6"/></svg>`,
+  /** The car's: the handbrake (its dashboard light, (!)), and boost (a bolt). */
+  handbrake: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M12 8.5v4.5M12 15.5v.01"/><path d="M4.5 6.5a9 9 0 0 0 0 11M19.5 6.5a9 9 0 0 1 0 11"/></svg>`,
+  boost: `<svg viewBox="0 0 24 24"><path d="M13.5 2.5L5.5 13.5h6l-1 8 8-11h-6z"/></svg>`,
 };
 
 /** Follow this finger even when it leaves the element (it may already be gone: then never mind). */
@@ -189,6 +192,8 @@ export class TouchControls {
   private readonly fireButton: HTMLElement;
   private readonly aimButton: HTMLElement;
   private readonly flyButton: HTMLElement;
+  private readonly upButton: HTMLElement;
+  private readonly downButton: HTMLElement;
   private upHeld = false;
   private downHeld = false;
   private aiming = false;
@@ -219,8 +224,8 @@ export class TouchControls {
     });
     this.drag(this.fireButton);
     this.aimButton = this.button('act aim', ICONS.aim, (down) => down && this.setAim(!this.aiming));
-    this.button('act up', ICONS.up, (down) => (this.upHeld = down));
-    this.button('act dn', ICONS.down, (down) => (this.downHeld = down));
+    this.upButton = this.button('act up', ICONS.up, (down) => (this.upHeld = down));
+    this.downButton = this.button('act dn', ICONS.down, (down) => (this.downHeld = down));
     this.flyButton = this.button('top fly', ICONS.walk, (down) => down && actions.toggleFly());
     this.button('top pause', ICONS.pause, (down) => down && actions.pause());
     document.body.append(this.root);
@@ -306,6 +311,12 @@ export class TouchControls {
   /** Show the tool in hand on the fire button. */
   setTool(icon: string): void {
     this.fireButton.innerHTML = icon;
+  }
+
+  /** In the car, up and down are the handbrake and boost (and show it). */
+  setDriving(on: boolean): void {
+    this.upButton.innerHTML = on ? ICONS.handbrake : ICONS.up;
+    this.downButton.innerHTML = on ? ICONS.boost : ICONS.down;
   }
 
   /** Flying or walking: the toggle shows what it switches to. */
