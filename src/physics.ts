@@ -12,8 +12,12 @@ import { type City, Mat, State, VOXEL, voxelAt } from './world.ts';
 
 /** Bodies kept spare for things thrown into the world. */
 export const SPARE = 256;
-/** Bodies for sections falling whole (proxy): each carries its voxels as one box. */
-export const PROXIES = 96;
+/**
+ * Bodies for sections falling whole (proxy): each carries its voxels as one box. At most 60 at once: the solver's
+ * broadphase tests up to 64 large bodies against everything, and past that the largest left size its grid cells
+ * (metres, not a voxel's), which made a demolition's collision detection some 20 times slower while they fell.
+ */
+export const PROXIES = 60;
 /** Bodies the solver holds for `city`: the ground, a body per voxel, the spares, the sections'. */
 export const bodyCapacity = (city: City): number => 1 + city.count + SPARE + PROXIES;
 /** A section carried as one body: its voxels, their offsets from its centre, and how they bond when it breaks. */

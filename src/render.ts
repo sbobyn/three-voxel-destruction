@@ -115,6 +115,11 @@ class TransparentPass extends THREE.PassNode {
 
 /** The smoke pass's resolution, as a share of the scene's, by quality. */
 const SMOKE_SCALE: Record<RenderQuality, number> = { high: 0.5, medium: 0.5, low: 0.35 };
+/**
+ * Pixels drawn at most at each quality, where a screen is small enough that its pixel ratio cap would draw fewer
+ * (a phone's): about as many as a laptop's screen at that quality. Larger screens keep their cap.
+ */
+const PIXEL_BUDGET: Record<RenderQuality, number> = { high: 1.6e6, medium: 1.0e6, low: 0.7e6 };
 
 const RAYS_CLEAR = 0.04;
 const RAYS_DUSTY = 0.14;
@@ -457,7 +462,10 @@ export class CityRenderer {
   baseResolution = 1;
   setResolutionScale(scale: number): void {
     this.resolutionScale = scale;
-    const base = Math.min(devicePixelRatio, this.quality === 'high' ? 1.5 : 1) * this.baseResolution;
+    // The quality's pixel ratio, or on a small screen (a phone's) as many pixels as its budget: a ratio of 1 on a
+    // phone's 3x display is a third of its resolution each way, and blurry
+    const budget = Math.sqrt(PIXEL_BUDGET[this.quality] / (this.width * this.height));
+    const base = Math.min(devicePixelRatio, Math.max(this.quality === 'high' ? 1.5 : 1, budget)) * this.baseResolution;
     const ratio = Math.max(0.5, base * scale);
     if (Math.abs(this.renderer.getPixelRatio() - ratio) < 1e-3) return;
     this.renderer.setPixelRatio(ratio);
@@ -1064,6 +1072,8 @@ export class CityRenderer {
   resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
+    // (The pixel ratio can depend on the size: see setResolutionScale)
+    this.setResolutionScale(this.resolutionScale);
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();

@@ -1101,23 +1101,48 @@ let sky: Sky;
  */
 let smoke: Particles | null = null;
 let smokeLevel: Settings['quality'] = 'high';
-let frameMs = 8;
+let frameMs = 16;
 let slowFor = 0;
 let quickFor = 0;
+/**
+ * The display's own frame interval (ms): the shortest of the last second or so of frames. Frames come no quicker
+ * than it, so on a 60 Hz screen (a phone's, most monitors) every frame takes 16.7 ms however little it costs: slow
+ * is dropping frames (longer than that), and quick is measured by the work itself (below), not the frames.
+ */
+const intervals = new Float32Array(90).fill(1000 / 60);
+let intervalAt = 0;
+/** How long a frame's work takes (ms): from the frame starting to the GPU finishing it (sampled, smoothed). */
+let workMs = 8;
+let timingWork = false;
+function timeWork(device: GPUDevice, started: number): void {
+  if (timingWork) return;
+  timingWork = true;
+  void device.queue.onSubmittedWorkDone().then(() => {
+    workMs += (performance.now() - started - workMs) * 0.2;
+    timingWork = false;
+  });
+}
 /** Resolution steps: full, and two thirds (pixel ratio 1.5 to 1: a half step still dropped frames). */
 const SCALES = [1, 0.66];
 let scaleStep = 0;
 function adaptSmoke(dt: number): void {
   if (!smoke) return;
   frameMs += (dt * 1000 - frameMs) * 0.12;
+  intervals[intervalAt++ % intervals.length] = dt * 1000;
+  const display = Math.max(1000 / 240, Math.min(...intervals));
+  // Slow: below 60 fps, or dropping the display's frames; quick: time to spare (on a 60 Hz display the frames
+  // can't show it, the work can)
+  const slow = Math.max(15, display * 1.4);
+  const slower = Math.max(12.5, display * 1.2);
+  const quick = display < 12 ? frameMs < 9.5 : workMs < 10 && frameMs < display * 1.1;
   const lower: Record<Settings['quality'], Settings['quality']> = { high: 'medium', medium: 'low', low: 'low' };
-  const want = frameMs > 15.5 ? 'low' : frameMs > 12.5 ? lower[settings.quality] : frameMs < 9.5 ? settings.quality : smokeLevel;
+  const want = frameMs > slow + 0.5 ? 'low' : frameMs > slower ? lower[settings.quality] : quick ? settings.quality : smokeLevel;
   if (want !== smokeLevel) {
     smokeLevel = want;
     smoke.setQuality(want);
   }
-  slowFor = frameMs > 15 ? slowFor + dt : 0;
-  quickFor = frameMs < 9 ? quickFor + dt : 0;
+  slowFor = frameMs > slow ? slowFor + dt : 0;
+  quickFor = quick ? quickFor + dt : 0;
   if (slowFor > 0.5 && scaleStep < SCALES.length - 1) {
     view.setResolutionScale(SCALES[++scaleStep]);
     slowFor = 0;
@@ -1918,6 +1943,7 @@ function frame(now: number): void {
 }
 /** One frame of the game at time `now` (ms): input, physics, effects, the render. */
 function tick(now: number): void {
+  const began = performance.now();
   // (Never negative: a clock that jumps back, a frame from a timer and one from the display
   // out of order, would stall the physics until it caught up)
   const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
@@ -2078,6 +2104,7 @@ function tick(now: number): void {
   view.heatClock.value = simTime;
   view.update(player.position, sky.sunColor, sunStrength, sky.horizon);
   view.render();
+  timeWork((view.renderer.backend as unknown as { device: GPUDevice }).device, began);
   if (frames % 15 === 0) {
     hud.stats(`${fps.toFixed(0)} fps\n${city.count.toLocaleString()} voxels · ${physics.loose.toLocaleString()} loose\n${[player.flying ? 'flying' : '', timeScale < 1 ? 'slow motion' : ''].filter(Boolean).join(' · ')}`);
   }
