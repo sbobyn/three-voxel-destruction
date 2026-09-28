@@ -269,6 +269,7 @@ function setDriving(on: boolean): void {
   hud.setDriving(on);
   hand.object.visible = !on;
   touch?.setFlying(on || player.flying);
+  touch?.setDriving(on);
   if (on) {
     chase.yaw = car.heading;
     chase.orbit = chase.lift = 0;
@@ -736,7 +737,7 @@ function driveInput(): Drive {
     throttle: clamp(k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown') + stick.forward),
     steer: clamp(k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight') - stick.right),
     handbrake: keys.has('Space') || touch?.up === true,
-    boost: (keys.has('KeyB') || touch?.sprint === true) && boostLeft > 0,
+    boost: (keys.has('KeyB') || touch?.sprint === true || touch?.down === true) && boostLeft > 0,
   };
 }
 
